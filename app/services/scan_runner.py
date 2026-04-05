@@ -1,44 +1,68 @@
-from app.collectors.news_collector import collect_news_triggers
-from app.engines.trigger_engine import classify_triggers
-from app.engines.theme_mapper import map_triggers_to_opportunities
-from app.engines.trigger_stack_builder import enrich_opportunities_with_trigger_stack
-from app.engines.opportunity_scorer import score_opportunities
-from app.engines.theme_builder import build_theme_cards
-from app.engines.daily_report_builder import build_daily_report
-from app.engines.card_builder import (
-    build_opportunity_cards,
-    build_theme_cards_payload,
-    build_daily_report_card
-)
-from app.db import save_run, save_opportunities, save_themes, save_daily_report
+import json
+from pathlib import Path
+from app.config import OUTPUT_PATH
+from app.collectors.sec_filings import collect_filings
+from app.collectors.news_collector import collect_news
+from app.collectors.market_data import collect_market_data
+from app.parsers.filing_parser import parse_filings
+from app.parsers.news_parser import parse_news
+from app.scoring.catalyst_score import calculate_catalyst_score
+from app.scoring.narrative_score import calculate_narrative_score
 
+def run_scan():
+    """
+    Rulează scanarea completă:
+    - colectează date
+    - parsează filings și știri
+    - calculează scoruri
+    - generează output JSON
+    """
 
-def run_scan() -> dict:
-    triggers = collect_news_triggers()
-    classified = classify_triggers(triggers)
-    mapped = map_triggers_to_opportunities(classified)
-    enriched = enrich_opportunities_with_trigger_stack(mapped)
-    scored = score_opportunities(enriched)
-    themes = build_theme_cards(scored)
-    daily_report = build_daily_report(scored, themes)
+    # 1. Colectare date
+    filings = collect_filings()
+    news = collect_news()
+    market = collect_market_data()
 
-    save_run("daily", f"Scan completed with {len(scored)} opportunities and {len(themes)} themes.")
-    save_opportunities(scored)
-    save_themes(themes)
-    save_daily_report(daily_report)
+    # 2. Parse
+    parsed_filings = parse_filings(filings)
+    parsed_news = parse_news(news)
 
+    # 3. Scoring
+    opportunities = []
+    for ticker in parsed_news.keys():
+        catalyst = calculate_catalyst_score(ticker, parsed_filings, parsed_news, market)
+        narrative = calculate_narrative_score(ticker, parsed_news)
+        score = (catalyst + narrative) / 2  # simplificat pentru MVP
+
+        opportunities.append({
+            "ticker": ticker,
+            "score": score,
+            "catalyst": catalyst,
+            "narrative": narrative,
+            "entry": None,  # optional
+            "target": None,  # optional
+        })
+
+    # 4. Themes (simplificat)
+    themes = list(set([t["theme"] for n in parsed_news.values() for t in n]))
+
+    # 5. Summary
     summary = {
-        "run_type": "daily",
-        "trigger_count": len(classified),
-        "opportunity_count": len(scored),
-        "theme_count": len(themes),
-        "top_themes": [t.theme_name for t in themes]
+        "total_opportunities": len(opportunities),
+        "total_news": sum([len(n) for n in parsed_news.values()])
     }
+
+    # 6. Scrie JSON
+    OUTPUT_PATH.parent.mkdir(exist_ok=True)
+    with open(OUTPUT_PATH, "w", encoding="utf-8") as f:
+        json.dump({
+            "summary": summary,
+            "opportunities": opportunities,
+            "themes": themes
+        }, f, indent=2)
 
     return {
         "summary": summary,
-        "triggers": [t.model_dump() for t in classified],
-        "themes": build_theme_cards_payload(themes),
-        "opportunities": build_opportunity_cards(scored),
-        "daily_report": build_daily_report_card(daily_report)
+        "opportunities": opportunities,
+        "themes": themes
     }
