@@ -18,6 +18,11 @@ def build_opportunity_card(opportunity: Opportunity) -> dict:
         "why_this_name": opportunity.why_this_name,
         "ai_verdict": opportunity.ai_verdict,
         "status": opportunity.status,
+        "trigger_stack": opportunity.trigger_stack,
+        "trigger_count": opportunity.trigger_count,
+        "market_confirmation": opportunity.market_confirmation,
+        "next_confirmations": opportunity.next_confirmations,
+        "failure_modes": opportunity.failure_modes,
     }
 
 
