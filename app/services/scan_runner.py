@@ -3,21 +3,17 @@
 import json
 from app.config import OUTPUT_PATH
 
-# Collectors
 from app.collectors.news_collector import collect_news_triggers
 from app.collectors.sec_filings import collect_filings
 from app.collectors.market_data import collect_market_data
 
-# Parsers
 from app.parsers.news_parser import parse_news
 from app.parsers.filing_parser import parse_filings
 
-# Engines
 from app.engines.trigger_engine import classify_triggers
 from app.engines.theme_mapper import map_triggers_to_opportunities
 from app.engines.trigger_stack_builder import enrich_opportunities_with_trigger_stack
 
-# Scoring
 from app.scoring.catalyst_score import calculate_catalyst_score
 from app.scoring.narrative_score import calculate_narrative_score
 from app.scoring.market_score import calculate_market_score
@@ -25,16 +21,6 @@ from app.scoring.risk_score import calculate_risk_score
 
 
 def run_scan():
-    """
-    Scanner real MVP:
-    - colectează știri, filings, market data
-    - parsează
-    - clasifică trigger-ele
-    - construiește oportunități
-    - aplică scoring
-    - exportă JSON final
-    """
-
     # 1) NEWS / TRIGGERS
     raw_news = collect_news_triggers()
     classified_triggers = classify_triggers(raw_news)
@@ -43,36 +29,53 @@ def run_scan():
     filings = collect_filings()
     parsed_filings = parse_filings(filings)
 
-    # 3) PARSE NEWS
-    parsed_news_input = [
-        {
-            "ticker": "UNKNOWN",
-            "title": trigger.headline,
-            "summary": trigger.headline,
-            "source": "news_trigger",
-            "link": ""
-        }
-        for trigger in classified_triggers
-    ]
-    parsed_news = parse_news(parsed_news_input)
-
-    # 4) BUILD OPPORTUNITIES
+    # 3) BUILD OPPORTUNITIES
     mapped_opportunities = map_triggers_to_opportunities(classified_triggers)
     enriched_opportunities = enrich_opportunities_with_trigger_stack(mapped_opportunities)
 
-    # 5) Determine ticker universe for market pull
+    # 4) ticker universe
     tickers = []
     for opp in enriched_opportunities:
-        ticker = getattr(opp, "ticker", None)
-        if ticker and ticker not in tickers:
-            tickers.append(ticker)
+        if opp.ticker not in tickers:
+            tickers.append(opp.ticker)
 
     if not tickers:
         tickers = ["SPY"]
 
+    # 5) market data
     market_data = collect_market_data(tickers)
 
-    # 6) FINAL SCORING
+    # 6) parsed_news PER TICKER based on related triggers/theme
+    parsed_news_input = []
+
+    for opp in enriched_opportunities:
+        related_triggers = [
+            trig for trig in classified_triggers
+            if trig.theme_hint == opp.theme
+        ]
+
+        if not related_triggers:
+            parsed_news_input.append({
+                "ticker": opp.ticker,
+                "title": opp.theme,
+                "summary": opp.theme,
+                "source": "theme_fallback",
+                "link": ""
+            })
+            continue
+
+        for trig in related_triggers:
+            parsed_news_input.append({
+                "ticker": opp.ticker,
+                "title": trig.headline,
+                "summary": trig.headline,
+                "source": "news_trigger",
+                "link": ""
+            })
+
+    parsed_news = parse_news(parsed_news_input)
+
+    # 7) final scoring
     final_opportunities = []
 
     for opp in enriched_opportunities:
@@ -125,9 +128,9 @@ def run_scan():
             "narrative_score": narrative_score,
             "market_score": market_score,
             "risk_score": risk_score,
-            "why_now": opp.why_now or "Emerging catalyst cluster detected.",
-            "why_this_name": opp.why_this_name or "",
-            "ai_verdict": opp.ai_verdict or "",
+            "why_now": opp.why_now or f"{opp.theme} is active and this name is mapped as a relevant beneficiary.",
+            "why_this_name": opp.why_this_name or f"{opp.company_name} is positioned as {opp.positioning} within {opp.theme}.",
+            "ai_verdict": opp.ai_verdict or f"{ticker} is a thematic candidate inside {opp.theme}.",
             "trigger_stack": opp.trigger_stack,
             "trigger_count": opp.trigger_count,
             "market_confirmation": opp.market_confirmation,
@@ -138,20 +141,20 @@ def run_scan():
             "market_data": market_data.get(ticker, {})
         })
 
-    # 7) SORT
+    # 8) sort
     final_opportunities = sorted(
         final_opportunities,
         key=lambda x: x["score"],
         reverse=True
     )
 
-    # 8) THEMES SUMMARY
+    # 9) themes
     themes = build_theme_summary(final_opportunities)
 
-    # 9) DAILY REPORT
+    # 10) daily report
     daily_report = build_daily_report(final_opportunities, themes)
 
-    # 10) FINAL OUTPUT
+    # 11) final output
     final_result = {
         "summary": {
             "total_opportunities": len(final_opportunities),
@@ -204,8 +207,7 @@ def build_theme_summary(opportunities):
             "tickers": list(set(data["tickers"]))
         })
 
-    result = sorted(result, key=lambda x: x["strength"], reverse=True)
-    return result
+    return sorted(result, key=lambda x: x["strength"], reverse=True)
 
 
 def build_daily_report(opportunities, themes):
