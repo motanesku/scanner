@@ -3,7 +3,7 @@ from pydantic import BaseModel, Field
 
 
 class Trigger(BaseModel):
-    trigger_type: Literal["news", "price", "filing", "insider", "theme"]
+    trigger_type: Literal["news", "price", "filing", "insider", "theme", "earnings", "market"]
     headline: str
     theme_hint: str
     subthemes: List[str] = Field(default_factory=list)
@@ -28,6 +28,12 @@ class Opportunity(BaseModel):
     why_this_name: str
     ai_verdict: str
     status: str = "ACTIVE WATCH"
+
+    trigger_stack: List[str] = Field(default_factory=list)
+    trigger_count: int = 0
+    market_confirmation: List[str] = Field(default_factory=list)
+    next_confirmations: List[str] = Field(default_factory=list)
+    failure_modes: List[str] = Field(default_factory=list)
 
 
 class ThemeCard(BaseModel):
