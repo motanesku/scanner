@@ -20,7 +20,7 @@ def run_scan() -> dict:
     themes = build_theme_cards(scored)
     daily_report = build_daily_report(scored, themes)
 
-    save_run("daily", f"Scan completed with {len(scored)} opportunities.")
+    save_run("daily", f"Scan completed with {len(scored)} opportunities and {len(themes)} themes.")
     save_opportunities(scored)
     save_themes(themes)
     save_daily_report(daily_report)
