@@ -12,17 +12,6 @@ from app.engines.card_builder import (
 )
 from app.db import save_run, save_opportunities, save_themes, save_daily_report
 
-import json
-from pathlib import Path
-from app.config import OUTPUT_PATH
-from app.collectors.sec_filings import collect_filings
-from app.collectors.news_collector import collect_news
-from app.collectors.market_data import collect_market_data
-from app.parsers.filing_parser import parse_filings
-from app.parsers.news_parser import parse_news
-from app.scoring.catalyst_score import calculate_catalyst_score
-from app.scoring.narrative_score import calculate_narrative_score
-
 def run_scan():
     """
     Rulează scanarea completă:
