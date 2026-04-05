@@ -1,16 +1,11 @@
 # File: app/collectors/market_data.py
 
-import csv
-import io
-import requests
-
-STOOQ_URL = "https://stooq.com/q/d/l/"
+import yfinance as yf
 
 
 def collect_market_data(tickers=None):
     """
-    Market data din Stooq, fără API key.
-    Returnează price / previous_close / volume / avg_volume_5d.
+    Market data folosind yfinance (stabil, deja folosit în proiectul tău).
     """
 
     if tickers is None:
@@ -18,86 +13,54 @@ def collect_market_data(tickers=None):
 
     results = {}
 
-    for ticker in tickers:
-        try:
-            stooq_symbol = f"{ticker.lower()}.us"
-            response = requests.get(
-                STOOQ_URL,
-                params={"s": stooq_symbol, "i": "d"},
-                timeout=20,
-                headers={"User-Agent": "Mozilla/5.0"}
-            )
-            response.raise_for_status()
+    try:
+        data = yf.download(
+            tickers=" ".join(tickers),
+            period="5d",
+            interval="1d",
+            group_by="ticker",
+            auto_adjust=False,
+            threads=True
+        )
 
-            content = response.text.strip()
-            if not content or "No data" in content:
+        for ticker in tickers:
+            try:
+                df = data[ticker] if len(tickers) > 1 else data
+
+                if df.empty:
+                    raise ValueError("No data returned")
+
+                last = df.iloc[-1]
+                prev = df.iloc[-2] if len(df) >= 2 else last
+
+                volume_series = df["Volume"].dropna()
+
                 results[ticker] = {
                     "ticker": ticker,
-                    "error": "No market data returned",
-                    "source": "Stooq"
+                    "price": float(last["Close"]),
+                    "previous_close": float(prev["Close"]),
+                    "open": float(last["Open"]),
+                    "high": float(last["High"]),
+                    "low": float(last["Low"]),
+                    "close": float(last["Close"]),
+                    "volume": int(last["Volume"]),
+                    "avg_volume_5d": float(volume_series.mean()) if not volume_series.empty else None,
+                    "source": "yfinance"
                 }
-                continue
 
-            reader = csv.DictReader(io.StringIO(content))
-            rows = list(reader)
-
-            if len(rows) < 2:
+            except Exception as e:
                 results[ticker] = {
                     "ticker": ticker,
-                    "error": "Not enough historical rows",
-                    "source": "Stooq"
+                    "error": str(e),
+                    "source": "yfinance"
                 }
-                continue
 
-            last_row = rows[-1]
-            prev_row = rows[-2]
-            recent_rows = rows[-5:] if len(rows) >= 5 else rows
-
-            volumes = []
-            for row in recent_rows:
-                try:
-                    volumes.append(int(row["Volume"]))
-                except Exception:
-                    continue
-
-            results[ticker] = {
-                "ticker": ticker,
-                "price": _to_float(last_row.get("Close")),
-                "previous_close": _to_float(prev_row.get("Close")),
-                "open": _to_float(last_row.get("Open")),
-                "high": _to_float(last_row.get("High")),
-                "low": _to_float(last_row.get("Low")),
-                "close": _to_float(last_row.get("Close")),
-                "volume": _to_int(last_row.get("Volume")),
-                "avg_volume_5d": _avg(volumes),
-                "source": "Stooq"
-            }
-
-        except Exception as e:
+    except Exception as e:
+        for ticker in tickers:
             results[ticker] = {
                 "ticker": ticker,
                 "error": str(e),
-                "source": "Stooq"
+                "source": "yfinance"
             }
 
     return results
-
-
-def _to_float(value):
-    try:
-        return float(value)
-    except Exception:
-        return None
-
-
-def _to_int(value):
-    try:
-        return int(value)
-    except Exception:
-        return None
-
-
-def _avg(values):
-    if not values:
-        return None
-    return sum(values) / len(values)
