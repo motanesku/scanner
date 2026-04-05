@@ -1,6 +1,7 @@
 from app.collectors.news_collector import collect_news_triggers
 from app.engines.trigger_engine import classify_triggers
 from app.engines.theme_mapper import map_triggers_to_opportunities
+from app.engines.trigger_stack_builder import enrich_opportunities_with_trigger_stack
 from app.engines.opportunity_scorer import score_opportunities
 from app.engines.theme_builder import build_theme_cards
 from app.engines.daily_report_builder import build_daily_report
@@ -16,7 +17,8 @@ def run_scan() -> dict:
     triggers = collect_news_triggers()
     classified = classify_triggers(triggers)
     mapped = map_triggers_to_opportunities(classified)
-    scored = score_opportunities(mapped)
+    enriched = enrich_opportunities_with_trigger_stack(mapped)
+    scored = score_opportunities(enriched)
     themes = build_theme_cards(scored)
     daily_report = build_daily_report(scored, themes)
 
