@@ -6,10 +6,10 @@ def score_opportunities(opportunities: list[Opportunity]) -> list[Opportunity]:
 
     for opp in opportunities:
         if opp.role == "Direct Winner":
-            opp.conviction_score = 8.5
+            opp.conviction_score = 8.7
             opp.priority_level = "High"
         else:
-            opp.conviction_score = 7.4
+            opp.conviction_score = 7.5
             opp.priority_level = "Medium"
 
         opp.thesis = (
@@ -19,7 +19,7 @@ def score_opportunities(opportunities: list[Opportunity]) -> list[Opportunity]:
 
         opp.why_now = (
             f"The {opp.theme} narrative is active and currently showing "
-            f"cross-market relevance."
+            f"cross-market relevance with growing investor attention."
         )
 
         opp.why_this_name = (
@@ -29,7 +29,7 @@ def score_opportunities(opportunities: list[Opportunity]) -> list[Opportunity]:
 
         opp.ai_verdict = (
             f"{opp.ticker} is currently a useful watchlist candidate inside "
-            f"the {opp.theme} opportunity set."
+            f"the {opp.theme} opportunity set, especially as a {opp.role.lower()}."
         )
 
         scored.append(opp)
