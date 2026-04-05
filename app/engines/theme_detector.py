@@ -1,7 +1,9 @@
+# File: app/engines/theme_detector.py
+
 from app.data.theme_registry import THEME_REGISTRY
 
 
-def detect_theme_from_text(text: str) -> tuple[str | None, list[str], float]:
+def detect_theme_from_text(text: str):
     text_lower = text.lower()
 
     best_theme = None
@@ -12,13 +14,17 @@ def detect_theme_from_text(text: str) -> tuple[str | None, list[str], float]:
         score = 0
 
         for kw in theme_data["keywords"]:
-            if kw.lower() in text_lower:
+            if kw in text_lower:
                 score += 1
 
         if score > best_score:
             best_score = score
             best_theme = theme_name
-            matched_subthemes = theme_data["subthemes"]
+            matched_subthemes = theme_data.get("subthemes", [])
+
+    # 🔥 IMPORTANT: fallback dacă nu găsește nimic
+    if best_theme is None:
+        return "General Market", ["Macro"], 4.5
 
     confidence = min(9.5, 5.0 + best_score)
 
