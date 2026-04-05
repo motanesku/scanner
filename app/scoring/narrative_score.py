@@ -1,6 +1,11 @@
 # File: app/scoring/narrative_score.py
 
 THEME_STRENGTH = {
+    "AI Infrastructure Buildout": 92,
+    "Semiconductors Cycle": 82,
+    "Energy & Commodities": 76,
+    "Cybersecurity": 80,
+    "General Market": 55,
     "AI Infrastructure": 90,
     "Semiconductors": 82,
     "Cloud": 78,
@@ -43,5 +48,7 @@ def calculate_narrative_score(ticker, parsed_news):
         score += 8
     elif len(ticker_news) == 2:
         score += 4
+    elif len(ticker_news) == 1:
+        score += 2
 
     return max(0, min(100, score))
