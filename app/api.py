@@ -8,11 +8,13 @@ from app.config import OUTPUT_PATH
 app = FastAPI(title="Scanner MVP API", version="1.0.0")
 
 
+# --- Health check ---
 @app.get("/health")
 def health():
     return {"status": "ok", "service": "scanner-mvp"}
 
 
+# --- Get results from latest scan ---
 @app.get("/api/scanner/results")
 def get_results():
     try:
@@ -34,8 +36,9 @@ def get_results():
         )
 
 
+# --- Original POST endpoint (Railway / API clients) ---
 @app.post("/api/scanner/run")
-def run_scanner_now():
+def run_scanner_now_post():
     result = run_scan()
     return {
         "status": "success",
@@ -46,6 +49,22 @@ def run_scanner_now():
     }
 
 
+# --- Mobile-friendly GET to run scanner ---
+@app.get("/api/scanner/run-now")
+def run_scanner_now_get():
+    """
+    Endpoint temporar pentru test mobil: rulează scannerul și returnează rezultatul.
+    """
+    result = run_scan()
+    return {
+        "status": "success",
+        "summary": result.get("summary", {}),
+        "opportunities": result.get("opportunities", []),
+        "themes": result.get("themes", [])
+    }
+
+
+# --- Root endpoint ---
 @app.get("/")
 def root():
     return {
@@ -53,6 +72,7 @@ def root():
         "endpoints": [
             "/health",
             "/api/scanner/results",
-            "/api/scanner/run"
+            "/api/scanner/run",
+            "/api/scanner/run-now"
         ]
     }
