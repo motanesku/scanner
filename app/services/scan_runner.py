@@ -1,23 +1,10 @@
-from app.collectors.news_collector import collect_news_triggers
-from app.engines.trigger_engine import classify_triggers
-from app.engines.theme_mapper import map_triggers_to_opportunities
-from app.engines.trigger_stack_builder import enrich_opportunities_with_trigger_stack
-from app.engines.opportunity_scorer import score_opportunities
-from app.engines.theme_builder import build_theme_cards
-from app.engines.daily_report_builder import build_daily_report
-from app.engines.card_builder import (
-    build_opportunity_cards,
-    build_theme_cards_payload,
-    build_daily_report_card
-)
-from app.db import save_run, save_opportunities, save_themes, save_daily_report
-import json
+# File: app/services/scan_runner.py
 
 import json
 from pathlib import Path
 from app.config import OUTPUT_PATH
 
-# Import colectori/parsers/scoring deja implementați
+# Import minimal pentru mobil, doar funcționalități de bază
 from app.collectors.sec_filings import collect_filings
 from app.collectors.news_collector import collect_news
 from app.collectors.market_data import collect_market_data
@@ -61,7 +48,7 @@ def run_scan():
         })
 
     # 4️⃣ Tematici
-    themes = list(set([t["theme"] for n in parsed_news.values() for t in n]))
+    themes = list(set([t.get("theme", "General") for n in parsed_news.values() for t in n]))
 
     # 5️⃣ Summary
     summary = {
