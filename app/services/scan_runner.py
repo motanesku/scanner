@@ -3,72 +3,217 @@
 import json
 from app.config import OUTPUT_PATH
 
+# Collectors
+from app.collectors.news_collector import collect_news_triggers
+from app.collectors.sec_filings import collect_filings
+from app.collectors.market_data import collect_market_data
+
+# Parsers
+from app.parsers.news_parser import parse_news
+from app.parsers.filing_parser import parse_filings
+
+# Existing engines
+from app.engines.trigger_engine import classify_triggers
+from app.engines.theme_mapper import map_triggers_to_opportunities
+from app.engines.trigger_stack_builder import enrich_opportunities_with_trigger_stack
+
+# Scoring
+from app.scoring.catalyst_score import calculate_catalyst_score
+from app.scoring.narrative_score import calculate_narrative_score
+from app.scoring.market_score import calculate_market_score
+from app.scoring.risk_score import calculate_risk_score
+
 
 def run_scan():
     """
-    Scanner minimal stabil pentru Railway / mobil.
-    Generează output valid și menține API-ul funcțional.
+    Scanner real MVP:
+    - colectează știri, filings, market data
+    - parsează
+    - clasifică trigger-ele
+    - construiește oportunități
+    - aplică scoring
+    - exportă JSON final
     """
 
-    result = {
+    # 1) NEWS / TRIGGERS
+    raw_news = collect_news_triggers()
+    classified_triggers = classify_triggers(raw_news)
+
+    # 2) FILINGS
+    filings = collect_filings()
+    parsed_filings = parse_filings(filings)
+
+    # 3) PARSE NEWS
+    parsed_news = parse_news(raw_news)
+
+    # 4) BUILD OPPORTUNITIES
+    mapped_opportunities = map_triggers_to_opportunities(classified_triggers)
+    enriched_opportunities = enrich_opportunities_with_trigger_stack(mapped_opportunities)
+
+    # 5) Determine ticker universe for market pull
+    tickers = []
+    for opp in enriched_opportunities:
+        ticker = opp.get("ticker")
+        if ticker and ticker not in tickers:
+            tickers.append(ticker)
+
+    if not tickers:
+        tickers = ["NVDA", "AMD", "CRDO", "PLTR", "SMCI"]
+
+    market_data = collect_market_data(tickers)
+
+    # 6) FINAL SCORING
+    final_opportunities = []
+
+    for opp in enriched_opportunities:
+        ticker = opp.get("ticker", "UNKNOWN")
+
+        catalyst_score = calculate_catalyst_score(
+            ticker=ticker,
+            parsed_filings=parsed_filings,
+            parsed_news=parsed_news,
+            market_data=market_data
+        )
+
+        narrative_score = calculate_narrative_score(
+            ticker=ticker,
+            parsed_news=parsed_news
+        )
+
+        market_score = calculate_market_score(
+            ticker=ticker,
+            market_data=market_data
+        )
+
+        risk_score = calculate_risk_score(
+            ticker=ticker,
+            parsed_filings=parsed_filings,
+            parsed_news=parsed_news
+        )
+
+        final_score = round(
+            (catalyst_score * 0.35) +
+            (narrative_score * 0.30) +
+            (market_score * 0.20) +
+            ((100 - risk_score) * 0.15),
+            1
+        )
+
+        signal = determine_signal(final_score, risk_score)
+
+        final_opportunities.append({
+            "ticker": ticker,
+            "company": opp.get("company", ticker),
+            "theme": opp.get("theme", "General"),
+            "score": final_score,
+            "signal": signal,
+            "catalyst_score": catalyst_score,
+            "narrative_score": narrative_score,
+            "market_score": market_score,
+            "risk_score": risk_score,
+            "why_now": opp.get("why_now", "Emerging catalyst cluster detected."),
+            "trigger_stack": opp.get("trigger_stack", []),
+            "entry": opp.get("entry", None),
+            "target": opp.get("target", None),
+            "market_data": market_data.get(ticker, {})
+        })
+
+    # 7) SORT
+    final_opportunities = sorted(
+        final_opportunities,
+        key=lambda x: x["score"],
+        reverse=True
+    )
+
+    # 8) THEMES SUMMARY
+    themes = build_theme_summary(final_opportunities)
+
+    # 9) DAILY REPORT
+    daily_report = build_daily_report(final_opportunities, themes)
+
+    # 10) FINAL OUTPUT
+    final_result = {
         "summary": {
-            "total_opportunities": 3,
+            "total_opportunities": len(final_opportunities),
+            "total_themes": len(themes),
             "scan_status": "ok"
         },
-        "opportunities": [
-            {
-                "ticker": "NVDA",
-                "score": 87,
-                "signal": "BUY",
-                "catalyst": "AI demand acceleration",
-                "narrative": "AI infrastructure expansion remains strong",
-                "entry": "420-430",
-                "target": "480"
-            },
-            {
-                "ticker": "AMD",
-                "score": 81,
-                "signal": "WATCH",
-                "catalyst": "GPU product cycle",
-                "narrative": "Semiconductor momentum supported by AI compute demand",
-                "entry": "108-112",
-                "target": "130"
-            },
-            {
-                "ticker": "CRDO",
-                "score": 84,
-                "signal": "BUY",
-                "catalyst": "Networking / datacenter demand",
-                "narrative": "AI infra second-order beneficiary",
-                "entry": "38-40",
-                "target": "48"
-            }
-        ],
-        "themes": [
-            {
-                "theme": "AI Infrastructure",
-                "strength": 91,
-                "tickers": ["NVDA", "AMD", "CRDO"]
-            },
-            {
-                "theme": "Semiconductors",
-                "strength": 84,
-                "tickers": ["NVDA", "AMD"]
-            }
-        ],
-        "daily_report": {
-            "headline": "AI infrastructure remains the strongest active market narrative.",
-            "focus": [
-                "Watch second-order semiconductor beneficiaries",
-                "Track earnings proximity and volume confirmation",
-                "Monitor AI capex and hyperscaler commentary"
-            ]
-        }
+        "opportunities": final_opportunities,
+        "themes": themes,
+        "daily_report": daily_report
     }
 
     OUTPUT_PATH.parent.mkdir(exist_ok=True)
-
     with open(OUTPUT_PATH, "w", encoding="utf-8") as f:
-        json.dump(result, f, indent=2)
+        json.dump(final_result, f, indent=2)
 
+    return final_result
+
+
+def determine_signal(score, risk_score):
+    if score >= 80 and risk_score < 45:
+        return "BUY"
+    if score >= 65:
+        return "WATCH"
+    return "PASS"
+
+
+def build_theme_summary(opportunities):
+    theme_map = {}
+
+    for opp in opportunities:
+        theme = opp.get("theme", "General")
+        if theme not in theme_map:
+            theme_map[theme] = {
+                "theme": theme,
+                "strength": 0,
+                "tickers": [],
+                "count": 0
+            }
+
+        theme_map[theme]["tickers"].append(opp["ticker"])
+        theme_map[theme]["strength"] += opp["score"]
+        theme_map[theme]["count"] += 1
+
+    result = []
+    for theme, data in theme_map.items():
+        avg_strength = round(data["strength"] / data["count"], 1) if data["count"] else 0
+        result.append({
+            "theme": theme,
+            "strength": avg_strength,
+            "tickers": list(set(data["tickers"]))
+        })
+
+    result = sorted(result, key=lambda x: x["strength"], reverse=True)
     return result
+
+
+def build_daily_report(opportunities, themes):
+    top_ideas = opportunities[:3]
+    top_themes = themes[:3]
+
+    return {
+        "headline": build_headline(top_themes),
+        "top_ideas": [
+            {
+                "ticker": x["ticker"],
+                "score": x["score"],
+                "signal": x["signal"],
+                "theme": x["theme"]
+            }
+            for x in top_ideas
+        ],
+        "focus": [
+            "Watch for multi-trigger continuation setups",
+            "Monitor filings for dilution or financing risk",
+            "Track relative volume confirmation and thematic expansion"
+        ]
+    }
+
+
+def build_headline(top_themes):
+    if not top_themes:
+        return "No dominant market narrative detected."
+
+    strongest = top_themes[0]["theme"]
+    return f"{strongest} is currently the strongest active market narrative."
