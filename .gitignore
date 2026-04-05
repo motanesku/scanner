@@ -1,4 +1,9 @@
-.env
 __pycache__/
-data/*.db
-outputs/*.json
+*.pyc
+*.pyo
+*.pyd
+.env
+venv/
+.venv/
+scanner.db
+outputs/latest_scan.json
