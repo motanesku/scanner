@@ -12,7 +12,7 @@ from app.collectors.market_data import collect_market_data
 from app.parsers.news_parser import parse_news
 from app.parsers.filing_parser import parse_filings
 
-# Existing engines
+# Engines
 from app.engines.trigger_engine import classify_triggers
 from app.engines.theme_mapper import map_triggers_to_opportunities
 from app.engines.trigger_stack_builder import enrich_opportunities_with_trigger_stack
@@ -44,7 +44,17 @@ def run_scan():
     parsed_filings = parse_filings(filings)
 
     # 3) PARSE NEWS
-    parsed_news = parse_news(raw_news)
+    parsed_news_input = [
+        {
+            "ticker": "UNKNOWN",
+            "title": trigger.headline,
+            "summary": trigger.headline,
+            "source": "news_trigger",
+            "link": ""
+        }
+        for trigger in classified_triggers
+    ]
+    parsed_news = parse_news(parsed_news_input)
 
     # 4) BUILD OPPORTUNITIES
     mapped_opportunities = map_triggers_to_opportunities(classified_triggers)
@@ -53,12 +63,12 @@ def run_scan():
     # 5) Determine ticker universe for market pull
     tickers = []
     for opp in enriched_opportunities:
-        ticker = opp.get("ticker")
+        ticker = getattr(opp, "ticker", None)
         if ticker and ticker not in tickers:
             tickers.append(ticker)
 
     if not tickers:
-        tickers = ["NVDA", "AMD", "CRDO", "PLTR", "SMCI"]
+        tickers = ["SPY"]
 
     market_data = collect_market_data(tickers)
 
@@ -66,7 +76,7 @@ def run_scan():
     final_opportunities = []
 
     for opp in enriched_opportunities:
-        ticker = opp.get("ticker", "UNKNOWN")
+        ticker = opp.ticker
 
         catalyst_score = calculate_catalyst_score(
             ticker=ticker,
@@ -103,18 +113,28 @@ def run_scan():
 
         final_opportunities.append({
             "ticker": ticker,
-            "company": opp.get("company", ticker),
-            "theme": opp.get("theme", "General"),
+            "company": opp.company_name,
+            "theme": opp.theme,
+            "subtheme": opp.subtheme,
+            "role": opp.role,
+            "positioning": opp.positioning,
+            "market_cap_bucket": opp.market_cap_bucket,
             "score": final_score,
             "signal": signal,
             "catalyst_score": catalyst_score,
             "narrative_score": narrative_score,
             "market_score": market_score,
             "risk_score": risk_score,
-            "why_now": opp.get("why_now", "Emerging catalyst cluster detected."),
-            "trigger_stack": opp.get("trigger_stack", []),
-            "entry": opp.get("entry", None),
-            "target": opp.get("target", None),
+            "why_now": opp.why_now or "Emerging catalyst cluster detected.",
+            "why_this_name": opp.why_this_name or "",
+            "ai_verdict": opp.ai_verdict or "",
+            "trigger_stack": opp.trigger_stack,
+            "trigger_count": opp.trigger_count,
+            "market_confirmation": opp.market_confirmation,
+            "next_confirmations": opp.next_confirmations,
+            "failure_modes": opp.failure_modes,
+            "entry": None,
+            "target": None,
             "market_data": market_data.get(ticker, {})
         })
 
