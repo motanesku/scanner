@@ -4,7 +4,7 @@ def calculate_catalyst_score(ticker, parsed_filings, parsed_news, market_data):
     """
     Scor bazat pe:
     - știri bullish / bearish
-    - filing-uri relevante
+    - filing-uri relevante pentru ticker
     - volum / price action de bază
     """
 
@@ -32,8 +32,14 @@ def calculate_catalyst_score(ticker, parsed_filings, parsed_news, market_data):
         if "breakout" in keywords:
             score += 5
 
-    # FILINGS
+    # FILINGS — aplică doar dacă tickerul apare în filing
+    ticker_lower = ticker.lower()
     for filing in parsed_filings:
+        filing_text = f"{filing.get('title', '')} {filing.get('summary', '')}".lower()
+
+        if ticker_lower not in filing_text:
+            continue
+
         sentiment = filing.get("sentiment", "neutral")
         risk_flags = filing.get("risk_flags", [])
         filing_type = filing.get("filing_type", "OTHER")
