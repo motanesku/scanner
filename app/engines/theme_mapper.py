@@ -9,6 +9,7 @@ THEME_MAP = {
             "role": "Direct Winner",
             "positioning": "Tier 1 Liquid Leader",
             "horizon": "Swing / Position",
+            "market_cap_bucket": "Large Cap"
         },
         {
             "ticker": "SCCO",
@@ -16,6 +17,7 @@ THEME_MAP = {
             "role": "Direct Winner",
             "positioning": "High Purity Producer",
             "horizon": "Position",
+            "market_cap_bucket": "Large Cap"
         },
         {
             "ticker": "ETN",
@@ -23,6 +25,7 @@ THEME_MAP = {
             "role": "Second-Order Winner",
             "positioning": "Grid / Electrical Infrastructure",
             "horizon": "Swing / Position",
+            "market_cap_bucket": "Large Cap"
         },
     ],
     "Cybersecurity Resilience": [
@@ -32,6 +35,7 @@ THEME_MAP = {
             "role": "Direct Winner",
             "positioning": "Large Cap Security Leader",
             "horizon": "Swing / Position",
+            "market_cap_bucket": "Large Cap"
         },
         {
             "ticker": "CRWD",
@@ -39,6 +43,7 @@ THEME_MAP = {
             "role": "Direct Winner",
             "positioning": "Cloud Security Leader",
             "horizon": "Swing / Position",
+            "market_cap_bucket": "Large Cap"
         },
         {
             "ticker": "ZS",
@@ -46,6 +51,7 @@ THEME_MAP = {
             "role": "Second-Order Winner",
             "positioning": "Zero Trust Exposure",
             "horizon": "Swing",
+            "market_cap_bucket": "Large Cap"
         },
     ]
 }
@@ -66,13 +72,15 @@ def map_triggers_to_opportunities(triggers: list[Trigger]) -> list[Opportunity]:
                     subtheme=trigger.subthemes[0] if trigger.subthemes else None,
                     role=item["role"],
                     positioning=item["positioning"],
+                    market_cap_bucket=item["market_cap_bucket"],
                     conviction_score=0.0,
                     priority_level="Medium",
                     horizon=item["horizon"],
                     thesis="",
                     why_now="",
                     why_this_name="",
-                    ai_verdict=""
+                    ai_verdict="",
+                    status="ACTIVE WATCH"
                 )
             )
 
