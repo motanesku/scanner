@@ -1,8 +1,9 @@
-import os
-from dotenv import load_dotenv
+from pathlib import Path
 
-load_dotenv()
+BASE_DIR = Path(__file__).resolve().parent.parent
 
-APP_ENV = os.getenv("APP_ENV", "dev")
-DB_PATH = os.getenv("DB_PATH", "data/scanner.db")
-OUTPUT_PATH = os.getenv("OUTPUT_PATH", "outputs/latest_scan.json")
+OUTPUT_DIR = BASE_DIR / "outputs"
+OUTPUT_DIR.mkdir(exist_ok=True)
+
+DB_PATH = BASE_DIR / "scanner.db"
+OUTPUT_PATH = OUTPUT_DIR / "latest_scan.json"
