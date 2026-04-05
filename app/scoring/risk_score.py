@@ -9,8 +9,14 @@ def calculate_risk_score(ticker, parsed_filings, parsed_news):
 
     risk = 20
 
-    # FILINGS
+    # FILINGS — aplică doar dacă tickerul apare în filing
+    ticker_lower = ticker.lower()
     for filing in parsed_filings:
+        filing_text = f"{filing.get('title', '')} {filing.get('summary', '')}".lower()
+
+        if ticker_lower not in filing_text:
+            continue
+
         risk_flags = filing.get("risk_flags", [])
         filing_type = filing.get("filing_type", "OTHER")
 
