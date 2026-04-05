@@ -2,60 +2,70 @@
 
 import requests
 
-YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
+YAHOO_QUOTE_URL = "https://query1.finance.yahoo.com/v7/finance/quote"
 
 
 def collect_market_data(tickers=None):
     """
-    Colectează market data simplă pentru tickerele date.
-    Returnează OHLC + volume + preț curent.
+    Colectează market data pentru toate tickerele într-un singur request.
+    Evită 429 mult mai bine decât request per ticker.
     """
 
     if tickers is None:
         tickers = ["NVDA", "AMD", "CRDO", "SMCI", "PLTR"]
 
+    if not tickers:
+        return {}
+
+    symbols = ",".join(sorted(set(tickers)))
+
+    headers = {
+        "User-Agent": "Mozilla/5.0"
+    }
+
     results = {}
 
-    for ticker in tickers:
-        try:
-            url = YAHOO_CHART_URL.format(ticker=ticker)
-            params = {
-                "range": "5d",
-                "interval": "1d"
-            }
+    try:
+        response = requests.get(
+            YAHOO_QUOTE_URL,
+            params={"symbols": symbols},
+            headers=headers,
+            timeout=20
+        )
+        response.raise_for_status()
+        data = response.json()
 
-            response = requests.get(url, params=params, timeout=15)
-            response.raise_for_status()
-            data = response.json()
+        quote_results = data.get("quoteResponse", {}).get("result", [])
 
-            result = data.get("chart", {}).get("result", [])
-            if not result:
-                results[ticker] = {"error": "No market data"}
+        for item in quote_results:
+            ticker = item.get("symbol")
+            if not ticker:
                 continue
-
-            quote = result[0].get("indicators", {}).get("quote", [{}])[0]
-            meta = result[0].get("meta", {})
-
-            closes = quote.get("close", [])
-            volumes = quote.get("volume", [])
-            highs = quote.get("high", [])
-            lows = quote.get("low", [])
-            opens = quote.get("open", [])
 
             results[ticker] = {
                 "ticker": ticker,
-                "price": meta.get("regularMarketPrice"),
-                "previous_close": meta.get("chartPreviousClose"),
-                "open": opens[-1] if opens else None,
-                "high": highs[-1] if highs else None,
-                "low": lows[-1] if lows else None,
-                "close": closes[-1] if closes else None,
-                "volume": volumes[-1] if volumes else None,
-                "avg_volume_5d": _avg([v for v in volumes if v is not None]),
+                "price": item.get("regularMarketPrice"),
+                "previous_close": item.get("regularMarketPreviousClose"),
+                "open": item.get("regularMarketOpen"),
+                "high": item.get("regularMarketDayHigh"),
+                "low": item.get("regularMarketDayLow"),
+                "close": item.get("regularMarketPrice"),
+                "volume": item.get("regularMarketVolume"),
+                "avg_volume_5d": item.get("averageDailyVolume3Month"),
                 "source": "Yahoo Finance"
             }
 
-        except Exception as e:
+        # fallback pentru tickere lipsă
+        for ticker in tickers:
+            if ticker not in results:
+                results[ticker] = {
+                    "ticker": ticker,
+                    "error": "No market data returned",
+                    "source": "Yahoo Finance"
+                }
+
+    except Exception as e:
+        for ticker in tickers:
             results[ticker] = {
                 "ticker": ticker,
                 "error": str(e),
@@ -63,9 +73,3 @@ def collect_market_data(tickers=None):
             }
 
     return results
-
-
-def _avg(values):
-    if not values:
-        return None
-    return sum(values) / len(values)
