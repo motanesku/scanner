@@ -1,35 +1,44 @@
-import json
-from pathlib import Path
-from app.config import OUTPUT_PATH
+from app.collectors.news_collector import collect_news_triggers
+from app.engines.trigger_engine import classify_triggers
+from app.engines.theme_mapper import map_triggers_to_opportunities
+from app.engines.trigger_stack_builder import enrich_opportunities_with_trigger_stack
+from app.engines.opportunity_scorer import score_opportunities
+from app.engines.theme_builder import build_theme_cards
+from app.engines.daily_report_builder import build_daily_report
+from app.engines.card_builder import (
+    build_opportunity_cards,
+    build_theme_cards_payload,
+    build_daily_report_card
+)
+from app.db import save_run, save_opportunities, save_themes, save_daily_report
 
-def run_scan():
-    # --- MOCK DATA ---
-    result = {
-        "summary": {"total_opportunities": 2},
-        "opportunities": [
-            {
-                "ticker": "NVDA",
-                "score": 87,
-                "catalyst": "Earnings beat",
-                "narrative": "AI growth strong",
-                "entry": 425,
-                "target": 480
-            },
-            {
-                "ticker": "AMD",
-                "score": 81,
-                "catalyst": "New GPU release",
-                "narrative": "Demand high",
-                "entry": 110,
-                "target": 135
-            }
-        ],
-        "themes": ["AI", "Semiconductors"]
+
+def run_scan() -> dict:
+    triggers = collect_news_triggers()
+    classified = classify_triggers(triggers)
+    mapped = map_triggers_to_opportunities(classified)
+    enriched = enrich_opportunities_with_trigger_stack(mapped)
+    scored = score_opportunities(enriched)
+    themes = build_theme_cards(scored)
+    daily_report = build_daily_report(scored, themes)
+
+    save_run("daily", f"Scan completed with {len(scored)} opportunities and {len(themes)} themes.")
+    save_opportunities(scored)
+    save_themes(themes)
+    save_daily_report(daily_report)
+
+    summary = {
+        "run_type": "daily",
+        "trigger_count": len(classified),
+        "opportunity_count": len(scored),
+        "theme_count": len(themes),
+        "top_themes": [t.theme_name for t in themes]
     }
 
-    # Scrie JSON-ul în OUTPUT_PATH
-    OUTPUT_PATH.parent.mkdir(exist_ok=True)
-    with open(OUTPUT_PATH, "w", encoding="utf-8") as f:
-        json.dump(result, f, indent=2)
-
-    return result
+    return {
+        "summary": summary,
+        "triggers": [t.model_dump() for t in classified],
+        "themes": build_theme_cards_payload(themes),
+        "opportunities": build_opportunity_cards(scored),
+        "daily_report": build_daily_report_card(daily_report)
+    }
