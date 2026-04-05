@@ -2,7 +2,14 @@ from app.collectors.news_collector import collect_news_triggers
 from app.engines.trigger_engine import classify_triggers
 from app.engines.theme_mapper import map_triggers_to_opportunities
 from app.engines.opportunity_scorer import score_opportunities
-from app.engines.card_builder import build_cards
+from app.engines.theme_builder import build_theme_cards
+from app.engines.daily_report_builder import build_daily_report
+from app.engines.card_builder import (
+    build_opportunity_cards,
+    build_theme_cards_payload,
+    build_daily_report_card
+)
+from app.db import save_run, save_opportunities, save_themes, save_daily_report
 
 
 def run_scan() -> dict:
@@ -10,17 +17,26 @@ def run_scan() -> dict:
     classified = classify_triggers(triggers)
     mapped = map_triggers_to_opportunities(classified)
     scored = score_opportunities(mapped)
-    cards = build_cards(scored)
+    themes = build_theme_cards(scored)
+    daily_report = build_daily_report(scored, themes)
+
+    save_run("daily", f"Scan completed with {len(scored)} opportunities.")
+    save_opportunities(scored)
+    save_themes(themes)
+    save_daily_report(daily_report)
 
     summary = {
         "run_type": "daily",
         "trigger_count": len(classified),
         "opportunity_count": len(scored),
-        "top_themes": list(set([t.theme_hint for t in classified]))
+        "theme_count": len(themes),
+        "top_themes": [t.theme_name for t in themes]
     }
 
     return {
         "summary": summary,
         "triggers": [t.model_dump() for t in classified],
-        "cards": cards
+        "themes": build_theme_cards_payload(themes),
+        "opportunities": build_opportunity_cards(scored),
+        "daily_report": build_daily_report_card(daily_report)
     }
