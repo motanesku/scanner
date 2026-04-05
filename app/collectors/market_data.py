@@ -1,13 +1,13 @@
 # File: app/collectors/market_data.py
 
-import yfinance as yf
+import requests
+from app.config import POLYGON_API_KEY
 
 
 def collect_market_data(tickers=None):
     """
-    Market data cu yfinance.
-    Dacă apare rate limit / lipsă date, întoarce scor neutru prin lipsa datelor,
-    nu strică restul scannerului.
+    Market data via Polygon previous day bar.
+    Stabil pentru un număr mic de tickere deja identificate.
     """
 
     if tickers is None:
@@ -15,12 +15,37 @@ def collect_market_data(tickers=None):
 
     results = {}
 
+    if not POLYGON_API_KEY:
+        for ticker in tickers:
+            results[ticker] = {
+                "ticker": ticker,
+                "price": None,
+                "previous_close": None,
+                "open": None,
+                "high": None,
+                "low": None,
+                "close": None,
+                "volume": None,
+                "avg_volume_5d": None,
+                "source": "polygon",
+                "status": "error",
+                "error": "Missing POLYGON_API_KEY"
+            }
+        return results
+
+    headers = {
+        "Authorization": f"Bearer {POLYGON_API_KEY}"
+    }
+
     for ticker in tickers:
         try:
-            tk = yf.Ticker(ticker)
-            df = tk.history(period="5d", interval="1d", auto_adjust=False)
+            url = f"https://api.polygon.io/v2/aggs/ticker/{ticker}/prev"
+            response = requests.get(url, headers=headers, timeout=20)
+            response.raise_for_status()
+            data = response.json()
 
-            if df is None or df.empty:
+            results_list = data.get("results", [])
+            if not results_list:
                 results[ticker] = {
                     "ticker": ticker,
                     "price": None,
@@ -31,26 +56,25 @@ def collect_market_data(tickers=None):
                     "close": None,
                     "volume": None,
                     "avg_volume_5d": None,
-                    "source": "yfinance",
+                    "source": "polygon",
                     "status": "no_data"
                 }
                 continue
 
-            last = df.iloc[-1]
-            prev = df.iloc[-2] if len(df) >= 2 else last
-            volume_series = df["Volume"].dropna()
+            bar = results_list[0]
 
+            close_price = _safe_float(bar.get("c"))
             results[ticker] = {
                 "ticker": ticker,
-                "price": _safe_float(last.get("Close")),
-                "previous_close": _safe_float(prev.get("Close")),
-                "open": _safe_float(last.get("Open")),
-                "high": _safe_float(last.get("High")),
-                "low": _safe_float(last.get("Low")),
-                "close": _safe_float(last.get("Close")),
-                "volume": _safe_int(last.get("Volume")),
-                "avg_volume_5d": _safe_float(volume_series.mean()) if not volume_series.empty else None,
-                "source": "yfinance",
+                "price": close_price,
+                "previous_close": close_price,
+                "open": _safe_float(bar.get("o")),
+                "high": _safe_float(bar.get("h")),
+                "low": _safe_float(bar.get("l")),
+                "close": close_price,
+                "volume": _safe_int(bar.get("v")),
+                "avg_volume_5d": _safe_int(bar.get("v")),
+                "source": "polygon",
                 "status": "ok"
             }
 
@@ -65,7 +89,7 @@ def collect_market_data(tickers=None):
                 "close": None,
                 "volume": None,
                 "avg_volume_5d": None,
-                "source": "yfinance",
+                "source": "polygon",
                 "status": "error",
                 "error": str(e)
             }
