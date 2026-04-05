@@ -11,61 +11,25 @@ from app.engines.card_builder import (
     build_daily_report_card
 )
 from app.db import save_run, save_opportunities, save_themes, save_daily_report
+import json
+from pathlib import Path
+from app.config import OUTPUT_PATH
 
 def run_scan():
     """
-    Rulează scanarea completă:
-    - colectează date
-    - parsează filings și știri
-    - calculează scoruri
-    - generează output JSON
+    Generare JSON mock minimal pentru test rapid pe mobil.
     """
-
-    # 1. Colectare date
-    filings = collect_filings()
-    news = collect_news()
-    market = collect_market_data()
-
-    # 2. Parse
-    parsed_filings = parse_filings(filings)
-    parsed_news = parse_news(news)
-
-    # 3. Scoring
-    opportunities = []
-    for ticker in parsed_news.keys():
-        catalyst = calculate_catalyst_score(ticker, parsed_filings, parsed_news, market)
-        narrative = calculate_narrative_score(ticker, parsed_news)
-        score = (catalyst + narrative) / 2  # simplificat pentru MVP
-
-        opportunities.append({
-            "ticker": ticker,
-            "score": score,
-            "catalyst": catalyst,
-            "narrative": narrative,
-            "entry": None,  # optional
-            "target": None,  # optional
-        })
-
-    # 4. Themes (simplificat)
-    themes = list(set([t["theme"] for n in parsed_news.values() for t in n]))
-
-    # 5. Summary
-    summary = {
-        "total_opportunities": len(opportunities),
-        "total_news": sum([len(n) for n in parsed_news.values()])
+    data = {
+        "summary": {"total_opportunities": 2},
+        "opportunities": [
+            {"ticker": "NVDA", "score": 87, "catalyst": "Earnings beat", "narrative": "AI growth strong"},
+            {"ticker": "AMD", "score": 81, "catalyst": "GPU release", "narrative": "High demand"}
+        ],
+        "themes": ["AI", "Semiconductors"]
     }
 
-    # 6. Scrie JSON
     OUTPUT_PATH.parent.mkdir(exist_ok=True)
     with open(OUTPUT_PATH, "w", encoding="utf-8") as f:
-        json.dump({
-            "summary": summary,
-            "opportunities": opportunities,
-            "themes": themes
-        }, f, indent=2)
+        json.dump(data, f, indent=2)
 
-    return {
-        "summary": summary,
-        "opportunities": opportunities,
-        "themes": themes
-    }
+    return data
