@@ -1,199 +1,121 @@
 # File: app/collectors/earnings_collector.py
 #
-# Colectează earnings calendar real din Yahoo Finance.
-# Fără API key — folosește endpoint-ul public v7/finance/quote
-# care returnează earningsTimestamp per ticker.
-#
-# Strategie:
-# 1. Avem o listă de ~150 tickere relevante (universe)
-# 2. Facem batch requests la Yahoo Finance (max 10 tickere per request)
-# 3. Extragem earningsTimestamp și calculăm days_to_earnings
-# 4. Returnăm doar tickerele cu earnings în fereastra 3-21 zile
-#
-# Earnings în 3-7 zile  → Tier 1 catalyst (setup pre-earnings)
-# Earnings în 8-14 zile → Tier 2 catalyst (planificare)
-# Earnings în 15-21 zile → informativ
+# Sursa: Nasdaq.com public earnings calendar API
+# Nu necesită API key, returnează earnings pentru orice zi
+# URL: https://api.nasdaq.com/api/calendar/earnings?date=YYYY-MM-DD
 
 import requests
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from app.utils.logger import log_info, log_warn, log_error
 
-# Universe de tickere pentru earnings scan
-# Acesta este universul de bază — Scanner-ul adaugă dinamic tickerele
-# identificate din triggere (Form 4, news, etc.)
-EARNINGS_UNIVERSE = [
-    # AI / Semiconductors
-    "NVDA", "AMD", "AVGO", "ALAB", "CRDO", "MRVL", "SMCI", "ANET",
-    "MU", "INTC", "TSM", "ASML", "KLAC", "LRCX", "AMAT",
-    # Cloud / Software
-    "MSFT", "GOOGL", "AMZN", "META", "CRM", "NOW", "SNOW", "DDOG",
-    "ZS", "CRWD", "PANW", "S", "OKTA",
-    # Fintech / Crypto
-    "COIN", "HOOD", "SQ", "PYPL", "NU", "SOFI", "AFRM",
-    # Energy / Defense
-    "CEG", "VST", "ETN", "VRT", "LMT", "RTX", "KTOS",
-    # Biotech
-    "RXRX", "EXAS", "NTRA", "ILMN",
-    # Industrial / Copper
-    "FCX", "SCCO", "X", "CLF",
-    # General large cap
-    "AAPL", "TSLA", "NFLX", "UBER", "LYFT",
-]
-
-# Fereastra de interes (zile)
-EARNINGS_WINDOW_MIN = 3
-EARNINGS_WINDOW_MAX = 21
-
-YAHOO_HEADERS = {
+NASDAQ_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-    "Accept": "application/json",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Origin": "https://www.nasdaq.com",
+    "Referer": "https://www.nasdaq.com/market-activity/earnings",
 }
 
 
 def get_earnings_calendar(
     extra_tickers: list[str] | None = None,
-    window_days: int = EARNINGS_WINDOW_MAX
+    window_days: int = 14
 ) -> dict:
     """
     Returnează dict: { "TICKER": { "days_to_earnings": N, "earnings_date": "YYYY-MM-DD" } }
-    Doar pentru tickerele cu earnings în fereastra specificată.
-
-    extra_tickers: tickere adiționale descoperite din triggere (Form 4, news)
+    Scanează zilele următoare și colectează toate earnings.
+    window_days: câte zile în viitor să scaneze
     """
-    universe = list(EARNINGS_UNIVERSE)
-    if extra_tickers:
-        for t in extra_tickers:
-            if t.upper() not in universe:
-                universe.append(t.upper())
+    log_info(f"[Earnings] Scanning Nasdaq earnings calendar ({window_days} days)...")
 
-    log_info(f"[Earnings] Scanning {len(universe)} tickers for upcoming earnings...")
+    all_earnings = {}
+    now = datetime.now(timezone.utc)
 
-    results = {}
-    errors = 0
+    for day_offset in range(0, window_days + 1):
+        target_date = now + timedelta(days=day_offset)
 
-    # Batch: 10 tickere per request la Yahoo Finance
-    for i in range(0, len(universe), 10):
-        batch = universe[i:i + 10]
-        batch_results = _fetch_earnings_batch(batch)
+        # Skip weekend
+        if target_date.weekday() >= 5:
+            continue
 
-        for ticker, data in batch_results.items():
-            if data:
-                results[ticker] = data
+        date_str = target_date.strftime("%Y-%m-%d")
+        daily = _fetch_nasdaq_earnings_for_date(date_str)
 
-        # Mic delay între batch-uri
-        if i + 10 < len(universe):
-            time.sleep(0.5)
+        for ticker, data in daily.items():
+            if ticker not in all_earnings:
+                all_earnings[ticker] = data
 
-    # Filtrează doar earnings în fereastra de interes
-    filtered = {
-        ticker: data
-        for ticker, data in results.items()
-        if EARNINGS_WINDOW_MIN <= data.get("days_to_earnings", 999) <= window_days
-    }
+        if day_offset < window_days:
+            time.sleep(0.3)
 
-    log_info(f"[Earnings] Found {len(filtered)} tickers with earnings in {EARNINGS_WINDOW_MIN}-{window_days} days.")
-    return filtered
+    log_info(f"[Earnings] Found {len(all_earnings)} tickers with upcoming earnings.")
+    return all_earnings
 
 
-def _fetch_earnings_batch(tickers: list[str]) -> dict:
+def _fetch_nasdaq_earnings_for_date(date_str: str) -> dict:
     """
-    Fetch earnings timestamps pentru un batch de tickere.
-    Yahoo Finance v7/finance/quote returnează earningsTimestamp.
+    Fetch earnings pentru o zi specifică din Nasdaq calendar.
     """
-    symbols = ",".join(tickers)
-    url = f"https://query1.finance.yahoo.com/v7/finance/quote"
-    params = {
-        "symbols": symbols,
-        "fields": "earningsTimestamp,earningsTimestampStart,earningsTimestampEnd,shortName,longName"
-    }
+    url = "https://api.nasdaq.com/api/calendar/earnings"
+    params = {"date": date_str}
 
     try:
         response = requests.get(
             url,
-            headers=YAHOO_HEADERS,
+            headers=NASDAQ_HEADERS,
             params=params,
             timeout=15
         )
 
         if response.status_code == 429:
-            log_warn("[Earnings] Yahoo Finance rate limit — waiting 5s...")
-            time.sleep(5)
-            # Retry o dată
-            response = requests.get(url, headers=YAHOO_HEADERS, params=params, timeout=15)
+            log_warn(f"[Earnings] Nasdaq rate limit for {date_str} — waiting 3s...")
+            time.sleep(3)
+            response = requests.get(url, headers=NASDAQ_HEADERS, params=params, timeout=15)
 
         if not response.ok:
-            log_warn(f"[Earnings] Yahoo returned {response.status_code} for batch {tickers[:3]}...")
+            log_warn(f"[Earnings] Nasdaq returned {response.status_code} for {date_str}")
             return {}
 
         data = response.json()
-        quotes = data.get("quoteResponse", {}).get("result", [])
+        rows = data.get("data", {}).get("rows", [])
 
-        results = {}
+        if not rows:
+            return {}
+
         now = datetime.now(timezone.utc)
+        results = {}
 
-        for quote in quotes:
-            ticker = quote.get("symbol", "").upper()
+        for row in rows:
+            ticker = (row.get("symbol") or "").strip().upper()
             if not ticker:
                 continue
 
-            # Yahoo returnează mai multe timestamp-uri — luăm cel mai relevant
-            earnings_ts = _best_earnings_timestamp(quote, now)
-
-            if earnings_ts is None:
-                continue
-
-            earnings_dt = datetime.fromtimestamp(earnings_ts, tz=timezone.utc)
-            days_to_earnings = (earnings_dt - now).days
-
-            # Ignoră earnings din trecut sau prea departe în viitor
-            if days_to_earnings < -1 or days_to_earnings > 90:
+            try:
+                earnings_dt = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                days_to_earnings = max(0, (earnings_dt - now).days)
+            except Exception:
                 continue
 
             results[ticker] = {
-                "days_to_earnings": max(0, days_to_earnings),
-                "earnings_date": earnings_dt.strftime("%Y-%m-%d"),
-                "company_name": quote.get("shortName") or quote.get("longName", ticker),
-                "source": "yahoo_finance"
+                "days_to_earnings": days_to_earnings,
+                "earnings_date": date_str,
+                "company_name": row.get("name", ticker),
+                "eps_estimate": row.get("epsForecast", ""),
+                "time": row.get("time", ""),
+                "source": "nasdaq_calendar"
             }
 
         return results
 
     except Exception as e:
-        log_warn(f"[Earnings] Batch fetch error: {e}")
+        log_warn(f"[Earnings] Nasdaq fetch error for {date_str}: {e}")
         return {}
-
-
-def _best_earnings_timestamp(quote: dict, now: datetime) -> int | None:
-    """
-    Yahoo returnează 3 câmpuri timestamp pentru earnings.
-    Alegem cel mai apropiat în viitor.
-    """
-    candidates = []
-
-    for field in ("earningsTimestamp", "earningsTimestampStart", "earningsTimestampEnd"):
-        ts = quote.get(field)
-        if ts and isinstance(ts, (int, float)) and ts > 0:
-            candidates.append(int(ts))
-
-    if not candidates:
-        return None
-
-    now_ts = int(now.timestamp())
-
-    # Preferă timestamp-urile în viitor
-    future = [ts for ts in candidates if ts > now_ts]
-    if future:
-        return min(future)  # cel mai aproape în viitor
-
-    # Dacă toate sunt în trecut, returnează cel mai recent
-    return max(candidates)
 
 
 def get_earnings_for_ticker(ticker: str) -> dict | None:
     """
     Helper: returnează earnings info pentru un singur ticker.
-    Folosit de trigger_stack_builder.
     """
-    result = get_earnings_calendar(extra_tickers=[ticker.upper()], window_days=30)
-    return result.get(ticker.upper())
+    results = get_earnings_calendar(window_days=21)
+    return results.get(ticker.upper())
