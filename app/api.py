@@ -62,14 +62,23 @@ def run_scanner_now_post():
     }
 
 
+import threading
+
 @app.get("/api/scanner/run-now")
 def run_scanner_now_get():
-    result = run_scan()
+    """Pornește scan în background și returnează imediat."""
+    def run_in_background():
+        try:
+            run_scan()
+        except Exception as e:
+            print(f"[Scanner] Background error: {e}")
+    
+    thread = threading.Thread(target=run_in_background, daemon=True)
+    thread.start()
+    
     return {
-        "status": "success",
-        "summary": result.get("summary", {}),
-        "opportunities": result.get("opportunities", []),
-        "themes": result.get("themes", [])
+        "status": "started",
+        "message": "Scanner started in background. Check /api/scanner/results in ~60 seconds."
     }
 
 
