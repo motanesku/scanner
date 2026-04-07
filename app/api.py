@@ -37,16 +37,31 @@ def get_results():
     try:
         if not Path(OUTPUT_PATH).exists():
             return JSONResponse(
-                status_code=404,
-                content={"error": f"No scan results found yet at {OUTPUT_PATH}"}
+                status_code=200,
+                content={"status": "pending", "message": "No scan results yet. Run /api/scanner/run-now first."}
             )
+        
+        # Verifică dacă fișierul e valid și nevid
+        if Path(OUTPUT_PATH).stat().st_size == 0:
+            return JSONResponse(
+                status_code=200,
+                content={"status": "pending", "message": "Scan in progress..."}
+            )
+
         with open(OUTPUT_PATH, "r", encoding="utf-8") as f:
             data = json.load(f)
+
         return data
+
+    except json.JSONDecodeError:
+        return JSONResponse(
+            status_code=200,
+            content={"status": "pending", "message": "Scan in progress or file corrupted."}
+        )
     except Exception as e:
         return JSONResponse(
             status_code=500,
-            content={"error": str(e), "output_path": str(OUTPUT_PATH)}
+            content={"error": str(e)}
         )
 
 
@@ -66,7 +81,6 @@ import threading
 
 @app.get("/api/scanner/run-now")
 def run_scanner_now_get():
-    """Pornește scan în background și returnează imediat."""
     def run_in_background():
         try:
             run_scan()
@@ -78,9 +92,8 @@ def run_scanner_now_get():
     
     return {
         "status": "started",
-        "message": "Scanner started in background. Check /api/scanner/results in ~60 seconds."
+        "message": "Scanner started. Check /api/scanner/results in ~90 seconds."
     }
-
 
 # ── Debug endpoints (permanente) ──────────────────────────────────
 
