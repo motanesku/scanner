@@ -1,59 +1,69 @@
 # File: app/data/theme_registry.py
+#
+# IMPORTANT: companiile au fost eliminate intentionat.
+# Tickerele sunt descoperite dinamic din triggere reale:
+# - SEC EDGAR Form 4 (insider buying)
+# - SEC EDGAR 8-K Item 2.02 (earnings)
+# - RSS news (mentions directe de ticker)
+# - Polygon volume spikes (urmator)
+#
+# theme_registry contine doar:
+# - keywords pentru detectia temei din text
+# - subtheme labels pentru context
 
 THEME_REGISTRY = {
 
     "AI Infrastructure Buildout": {
         "keywords": [
-            "ai", "gpu", "datacenter", "inference", "training",
-            "server", "compute", "cloud", "hyperscaler"
+            "ai", "gpu", "datacenter", "data center", "inference",
+            "training", "server", "compute", "cloud", "hyperscaler",
+            "nvidia", "artificial intelligence", "llm", "foundation model"
         ],
-        "subthemes": ["Compute", "Networking", "Cloud"],
-        "companies": [
-            {"ticker": "NVDA", "company_name": "Nvidia", "role": "Leader", "positioning": "AI Compute", "horizon": "Position", "market_cap_bucket": "Large Cap"},
-            {"ticker": "AMD", "company_name": "AMD", "role": "Challenger", "positioning": "AI Compute", "horizon": "Position", "market_cap_bucket": "Large Cap"},
-            {"ticker": "SMCI", "company_name": "Super Micro", "role": "Infra", "positioning": "Servers", "horizon": "Swing", "market_cap_bucket": "Large Cap"},
-            {"ticker": "ANET", "company_name": "Arista", "role": "Infra", "positioning": "Networking", "horizon": "Position", "market_cap_bucket": "Large Cap"}
-        ]
+        "subthemes": ["Compute", "Networking", "Cloud", "Power"],
     },
 
     "Semiconductors Cycle": {
         "keywords": [
-            "semiconductor", "chip", "wafer", "fab", "foundry"
+            "semiconductor", "chip", "wafer", "fab", "foundry",
+            "chipmaker", "node", "lithography", "packaging"
         ],
-        "subthemes": ["Chips", "Manufacturing"],
-        "companies": [
-            {"ticker": "TSM", "company_name": "TSMC", "role": "Foundry", "positioning": "Core Supplier", "horizon": "Position", "market_cap_bucket": "Large Cap"},
-            {"ticker": "INTC", "company_name": "Intel", "role": "Legacy", "positioning": "Turnaround", "horizon": "Swing", "market_cap_bucket": "Large Cap"}
-        ]
+        "subthemes": ["Chips", "Manufacturing", "Equipment"],
     },
 
     "Energy & Commodities": {
         "keywords": [
-            "oil", "gas", "lng", "energy", "commodity", "uranium"
+            "oil", "gas", "lng", "energy", "commodity", "uranium",
+            "nuclear", "copper", "mining", "crude", "brent", "wti"
         ],
-        "subthemes": ["Oil", "Gas", "Uranium"],
-        "companies": [
-            {"ticker": "XOM", "company_name": "Exxon", "role": "Major", "positioning": "Oil", "horizon": "Position", "market_cap_bucket": "Large Cap"},
-            {"ticker": "CCJ", "company_name": "Cameco", "role": "Uranium", "positioning": "Nuclear", "horizon": "Position", "market_cap_bucket": "Mid Cap"}
-        ]
+        "subthemes": ["Oil", "Gas", "Uranium", "Copper"],
     },
 
     "Cybersecurity": {
         "keywords": [
-            "cyber", "security", "ransomware", "breach"
+            "cyber", "security", "ransomware", "breach", "firewall",
+            "zero trust", "endpoint", "siem", "threat", "hack"
         ],
-        "subthemes": ["Cloud Security"],
-        "companies": [
-            {"ticker": "CRWD", "company_name": "CrowdStrike", "role": "Leader", "positioning": "Security", "horizon": "Position", "market_cap_bucket": "Large Cap"},
-            {"ticker": "PANW", "company_name": "Palo Alto", "role": "Leader", "positioning": "Security", "horizon": "Position", "market_cap_bucket": "Large Cap"}
-        ]
+        "subthemes": ["Cloud Security", "Endpoint", "Identity"],
+    },
+
+    "Defense & Aerospace": {
+        "keywords": [
+            "defense", "military", "pentagon", "contract", "weapon",
+            "missile", "drone", "aerospace", "navy", "army", "nato"
+        ],
+        "subthemes": ["Defense Spending", "Drones", "Space"],
+    },
+
+    "Biotech & Pharma": {
+        "keywords": [
+            "fda", "trial", "approval", "drug", "biotech", "clinical",
+            "phase", "nda", "bla", "pdufa", "therapy", "oncology"
+        ],
+        "subthemes": ["FDA Catalysts", "Oncology", "Gene Therapy"],
     },
 
     "General Market": {
         "keywords": [],
         "subthemes": ["Macro"],
-        "companies": [
-            {"ticker": "SPY", "company_name": "S&P 500 ETF", "role": "Macro Proxy", "positioning": "Market", "horizon": "Swing", "market_cap_bucket": "Large Cap"}
-        ]
     }
 }
