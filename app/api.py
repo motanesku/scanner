@@ -136,27 +136,51 @@ def debug_insider():
 
 @app.get("/api/debug/insider-xml")
 def debug_insider_xml():
-    import requests
-    import re
+    import requests, re
+    import xml.etree.ElementTree as ET
     
     headers = {"User-Agent": "scanner-mvp/1.0 danut.fagadau@gmail.com"}
     
-    # Testează direct URL-ul CRDO din sesiunea anterioară
     test_urls = [
-        "https://www.sec.gov/Archives/edgar/data/1807794/000162828026023885/wk-form4_1775505331.xml",
-        "https://www.sec.gov/Archives/edgar/data/1971115/000149315226015387/ownership.xml",
-        "https://www.sec.gov/Archives/edgar/data/4281/000110465926040184/tm2611291-1_4seq1.xml",
+        ("crdo", "https://www.sec.gov/Archives/edgar/data/1807794/000162828026023885/wk-form4_1775505331.xml"),
+        ("ryde", "https://www.sec.gov/Archives/edgar/data/1971115/000149315226015387/ownership.xml"),
+        ("howmet", "https://www.sec.gov/Archives/edgar/data/4281/000110465926040184/tm2611291-1_4seq1.xml"),
     ]
     
     results = {}
-    for url in test_urls:
+    for name, url in test_urls:
         try:
             r = requests.get(url, headers=headers, timeout=10)
-            results[url.split("/")[-1]] = {
-                "status": r.status_code,
-                "first_200_chars": r.text[:200] if r.ok else r.text[:100]
-            }
+            if r.ok:
+                # Arată primii 500 chars din XML brut
+                raw = r.text[:500]
+                # Încearcă namespace cleanup
+                xml_clean = re.sub(r'\sxmlns[^"]*"[^"]*"', '', r.text)
+                xml_clean = re.sub(r'<[^>]+:', '<', xml_clean)
+                xml_clean = re.sub(r'</[^>]+:', '</', xml_clean)
+                # Încearcă să parseze
+                try:
+                    root = ET.fromstring(xml_clean)
+                    ticker_elem = root.find(".//issuerTradingSymbol")
+                    txn_count = len(root.findall(".//nonDerivativeTransaction"))
+                    results[name] = {
+                        "status": r.status_code,
+                        "raw_start": raw,
+                        "parse": "OK",
+                        "ticker_found": ticker_elem.text if ticker_elem is not None else "NOT FOUND",
+                        "txn_count": txn_count,
+                        "root_tag": root.tag,
+                        "children": [c.tag for c in list(root)[:5]]
+                    }
+                except Exception as e:
+                    results[name] = {
+                        "status": r.status_code,
+                        "raw_start": raw,
+                        "parse": f"ERROR: {e}"
+                    }
+            else:
+                results[name] = {"status": r.status_code}
         except Exception as e:
-            results[url.split("/")[-1]] = {"error": str(e)}
+            results[name] = {"error": str(e)}
     
     return results
