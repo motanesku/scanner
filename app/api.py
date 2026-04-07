@@ -184,3 +184,40 @@ def debug_insider_xml():
             results[name] = {"error": str(e)}
     
     return results
+
+@app.get("/api/debug/insider-txn")
+def debug_insider_txn():
+    import requests, re
+    import xml.etree.ElementTree as ET
+    
+    headers = {"User-Agent": "scanner-mvp/1.0 danut.fagadau@gmail.com"}
+    url = "https://www.sec.gov/Archives/edgar/data/1807794/000162828026023885/wk-form4_1775505331.xml"
+    
+    r = requests.get(url, headers=headers, timeout=10)
+    xml_clean = re.sub(r'\sxmlns[^"]*"[^"]*"', '', r.text)
+    xml_clean = re.sub(r'<[^>]+:', '<', xml_clean)
+    xml_clean = re.sub(r'</[^>]+:', '</', xml_clean)
+    
+    root = ET.fromstring(xml_clean)
+    
+    # Dump toate tranzacțiile cu toate câmpurile
+    txns = []
+    for txn in root.findall(".//nonDerivativeTransaction"):
+        txn_data = {}
+        for child in txn.iter():
+            if child.text and child.text.strip():
+                txn_data[child.tag] = child.text.strip()
+        txns.append(txn_data)
+    
+    deriv_txns = []
+    for txn in root.findall(".//derivativeTransaction"):
+        txn_data = {}
+        for child in txn.iter():
+            if child.text and child.text.strip():
+                txn_data[child.tag] = child.text.strip()
+        deriv_txns.append(txn_data)
+    
+    return {
+        "non_derivative": txns,
+        "derivative": deriv_txns
+    }
