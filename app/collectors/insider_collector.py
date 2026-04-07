@@ -1,11 +1,6 @@
 # File: app/collectors/insider_collector.py
-#
-# Colectează Form 4 (insider transactions) din SEC EDGAR.
-# Fix: folosim _id din EFTS care conține direct path-ul XML
-# Format _id: "0001628280-26-023885:wk-form4_1775505331.xml"
-#             ──────────────────── ───────────────────────
-#             accession            filename
 
+import re
 import requests
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone, timedelta
@@ -20,10 +15,6 @@ MIN_BUY_AMOUNT_USD = 50_000
 
 
 def collect_insider_triggers(days_back: int = 2) -> list[dict]:
-    """
-    Colectează Form 4 recente din SEC EDGAR.
-    Returnează lista de triggere cu insider buying semnificativ.
-    """
     log_info(f"[Form4] Collecting insider transactions (last {days_back} days)...")
 
     filings = _fetch_recent_form4_filings(days_back)
@@ -54,10 +45,6 @@ def collect_insider_triggers(days_back: int = 2) -> list[dict]:
 
 
 def _fetch_recent_form4_filings(days_back: int) -> list[dict]:
-    """
-    Fetch Form 4 recente din EDGAR EFTS.
-    Extrage accession + filename XML direct din _id field.
-    """
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     start_date = (datetime.now(timezone.utc) - timedelta(days=days_back)).strftime("%Y-%m-%d")
 
@@ -79,7 +66,6 @@ def _fetch_recent_form4_filings(days_back: int) -> list[dict]:
         filings = []
 
         for hit in hits:
-            # _id format: "0001628280-26-023885:wk-form4_1775505331.xml"
             hit_id = hit.get("_id", "")
             source = hit.get("_source", {})
 
@@ -88,19 +74,19 @@ def _fetch_recent_form4_filings(days_back: int) -> list[dict]:
 
             accession_raw, xml_filename = hit_id.split(":", 1)
 
-            # Sari dacă nu e XML
             if not xml_filename.endswith(".xml"):
                 continue
 
-            # CIK-ul companiei e al doilea din lista ciks
             ciks = source.get("ciks", [])
             company_cik = ciks[-1] if len(ciks) >= 2 else (ciks[0] if ciks else "")
-            company_cik = str(int(company_cik)) if company_cik else ""
+            try:
+                company_cik = str(int(company_cik)) if company_cik else ""
+            except Exception:
+                company_cik = ""
 
             display_names = source.get("display_names", [])
             company_name = display_names[-1] if len(display_names) >= 2 else (display_names[0] if display_names else "")
 
-            # accession fără cratime pentru path
             accession_clean = accession_raw.replace("-", "")
 
             filings.append({
@@ -121,10 +107,6 @@ def _fetch_recent_form4_filings(days_back: int) -> list[dict]:
 
 
 def _parse_form4_filing(filing: dict) -> dict | None:
-    """
-    Descarcă și parsează XML-ul Form 4.
-    URL format: https://www.sec.gov/Archives/edgar/data/{CIK}/{accession_clean}/{xml_filename}
-    """
     cik = filing.get("company_cik", "")
     accession_clean = filing.get("accession_clean", "")
     xml_filename = filing.get("xml_filename", "")
@@ -137,12 +119,6 @@ def _parse_form4_filing(filing: dict) -> dict | None:
     try:
         response = requests.get(xml_url, headers=SEC_HEADERS, timeout=15)
 
-        if response.status_code == 404:
-            # Proba cu CIK padding
-            cik_padded = cik.zfill(10)
-            xml_url2 = f"https://www.sec.gov/Archives/edgar/data/{cik_padded}/{accession_clean}/{xml_filename}"
-            response = requests.get(xml_url2, headers=SEC_HEADERS, timeout=15)
-
         if not response.ok:
             return None
 
@@ -154,70 +130,140 @@ def _parse_form4_filing(filing: dict) -> dict | None:
 
 def _extract_form4_data(xml_text: str, filing: dict) -> dict | None:
     """
-    Parsează XML-ul Form 4 și extrage datele relevante.
+    Parsează XML Form 4 — suportă multiple formate:
+    - Standard SEC (fără namespace)
+    - ownership.xml (cu namespace http://www.sec.gov/...)
+    - rdgdoc.xml (format alternativ)
     """
     try:
-        root = ET.fromstring(xml_text)
+        # Elimină namespace-uri pentru parsing uniform
+        xml_clean = re.sub(r'\sxmlns[^"]*"[^"]*"', '', xml_text)
+        xml_clean = re.sub(r'<[^>]+:', '<', xml_clean)
+        xml_clean = re.sub(r'</[^>]+:', '</', xml_clean)
 
-        # Ticker
-        ticker = ""
-        company_name = filing.get("company_name", "")
+        root = ET.fromstring(xml_clean)
+    except ET.ParseError:
+        return None
 
-        issuer = root.find(".//issuer")
-        if issuer is not None:
-            ticker_elem = issuer.find("issuerTradingSymbol")
-            if ticker_elem is not None and ticker_elem.text:
-                ticker = ticker_elem.text.strip().upper()
-            name_elem = issuer.find("issuerName")
-            if name_elem is not None and name_elem.text:
-                company_name = name_elem.text.strip()
+    # ── Ticker ────────────────────────────────────────────────────
+    ticker = ""
+    company_name = _clean_display_name(filing.get("company_name", ""))
 
-        if not ticker:
-            return None
+    # Încearcă multiple path-uri pentru ticker
+    ticker_paths = [
+        ".//issuerTradingSymbol",
+        ".//issuer/issuerTradingSymbol",
+        ".//tradingSymbol",
+    ]
+    for path in ticker_paths:
+        elem = root.find(path)
+        if elem is not None and elem.text and elem.text.strip():
+            ticker = elem.text.strip().upper()
+            break
 
-        # Insider info
-        insider_name = ""
-        insider_role = ""
-        owner = root.find(".//reportingOwner")
-        if owner is not None:
-            name_elem = owner.find(".//reportingOwnerId/rptOwnerName")
-            if name_elem is not None and name_elem.text:
-                insider_name = name_elem.text.strip()
+    # Fallback: încearcă să extragă ticker din company_name
+    if not ticker:
+        ticker = _extract_ticker_from_name(company_name)
 
-            rel = owner.find(".//reportingOwnerRelationship")
-            if rel is not None:
-                is_director = rel.findtext("isDirector", "0")
-                is_officer = rel.findtext("isOfficer", "0")
-                officer_title = rel.findtext("officerTitle", "")
-                if is_director == "1":
-                    insider_role = "Director"
-                elif is_officer == "1":
-                    insider_role = officer_title or "Officer"
-                else:
-                    insider_role = "10% Owner"
+    if not ticker:
+        return None
 
-        # Tranzacții non-derivative
-        best_purchase = None
+    # ── Company name ──────────────────────────────────────────────
+    name_paths = [
+        ".//issuerName",
+        ".//issuer/issuerName",
+        ".//companyName",
+    ]
+    for path in name_paths:
+        elem = root.find(path)
+        if elem is not None and elem.text and elem.text.strip():
+            company_name = elem.text.strip()
+            break
 
-        for txn in root.findall(".//nonDerivativeTransaction"):
-            code_elem = txn.find(".//transactionCoding/transactionCode")
-            if code_elem is None or not code_elem.text:
-                continue
+    # ── Insider info ──────────────────────────────────────────────
+    insider_name = ""
+    insider_role = ""
 
-            code = code_elem.text.strip().upper()
+    name_paths2 = [
+        ".//reportingOwnerId/rptOwnerName",
+        ".//rptOwnerName",
+        ".//ownerName",
+    ]
+    for path in name_paths2:
+        elem = root.find(path)
+        if elem is not None and elem.text:
+            insider_name = elem.text.strip()
+            break
+
+    # Role
+    is_director = root.findtext(".//isDirector", "0")
+    is_officer = root.findtext(".//isOfficer", "0")
+    officer_title = root.findtext(".//officerTitle", "")
+
+    if is_director == "1":
+        insider_role = "Director"
+    elif is_officer == "1":
+        insider_role = officer_title.strip() if officer_title else "Officer"
+    else:
+        insider_role = "10% Owner"
+
+    # ── Tranzacții ────────────────────────────────────────────────
+    best_purchase = None
+
+    # Caută în nonDerivativeTransaction și derivativeTransaction
+    txn_paths = [
+        ".//nonDerivativeTransaction",
+        ".//nonDerivativeTable/nonDerivativeTransaction",
+        ".//derivativeTransaction",
+    ]
+
+    for txn_path in txn_paths:
+        for txn in root.findall(txn_path):
+            code = ""
+            code_paths = [
+                ".//transactionCoding/transactionCode",
+                ".//transactionCode",
+            ]
+            for cp in code_paths:
+                elem = txn.find(cp)
+                if elem is not None and elem.text:
+                    code = elem.text.strip().upper()
+                    break
+
             if code not in ("P", "S"):
                 continue
 
-            shares_elem = txn.find(".//transactionAmounts/transactionShares/value")
-            price_elem = txn.find(".//transactionAmounts/transactionPricePerShare/value")
-            date_elem = txn.find(".//transactionDate/value")
+            # Shares
+            shares = 0.0
+            for sp in [".//transactionAmounts/transactionShares/value",
+                       ".//transactionShares/value", ".//shares/value"]:
+                elem = txn.find(sp)
+                if elem is not None and elem.text:
+                    try:
+                        shares = float(elem.text.strip())
+                        break
+                    except ValueError:
+                        pass
 
-            try:
-                shares = float(shares_elem.text) if shares_elem is not None and shares_elem.text else 0
-                price = float(price_elem.text) if price_elem is not None and price_elem.text else 0
-                date = date_elem.text.strip() if date_elem is not None and date_elem.text else ""
-            except (ValueError, AttributeError):
-                continue
+            # Price
+            price = 0.0
+            for pp in [".//transactionAmounts/transactionPricePerShare/value",
+                       ".//transactionPricePerShare/value", ".//pricePerShare/value"]:
+                elem = txn.find(pp)
+                if elem is not None and elem.text:
+                    try:
+                        price = float(elem.text.strip())
+                        break
+                    except ValueError:
+                        pass
+
+            # Date
+            date = ""
+            for dp in [".//transactionDate/value", ".//transactionDate"]:
+                elem = txn.find(dp)
+                if elem is not None and elem.text:
+                    date = elem.text.strip()
+                    break
 
             value = shares * price
 
@@ -230,50 +276,63 @@ def _extract_form4_data(xml_text: str, filing: dict) -> dict | None:
                     "transaction_date": date,
                 }
 
-        if not best_purchase or best_purchase["total_value"] == 0:
-            return None
-
-        # Confidence
-        val = best_purchase["total_value"]
-        confidence = 6.0
-        if val >= 1_000_000:    confidence = 9.0
-        elif val >= 500_000:    confidence = 8.5
-        elif val >= 200_000:    confidence = 8.0
-        elif val >= 100_000:    confidence = 7.5
-        elif val >= 50_000:     confidence = 7.0
-
-        if any(t in insider_role for t in ("CEO", "President", "CFO", "CTO", "COO")):
-            confidence = min(9.5, confidence + 0.5)
-
-        accession = filing.get("accession", "")
-        filing_url = f"https://www.sec.gov/Archives/edgar/data/{filing.get('company_cik', '')}/{filing.get('accession_clean', '')}/{filing.get('xml_filename', '')}"
-
-        return {
-            "ticker": ticker,
-            "company_name": company_name,
-            "insider_name": insider_name,
-            "insider_role": insider_role,
-            "transaction_type": best_purchase["transaction_type"],
-            "shares": best_purchase["shares"],
-            "price_per_share": best_purchase["price_per_share"],
-            "total_value": best_purchase["total_value"],
-            "transaction_date": best_purchase["transaction_date"],
-            "filing_url": filing_url,
-            "signal": "insider_buy",
-            "tier": 1,
-            "confidence": confidence,
-        }
-
-    except ET.ParseError:
+    if not best_purchase or best_purchase["total_value"] == 0:
         return None
-    except Exception:
-        return None
+
+    # ── Confidence ────────────────────────────────────────────────
+    val = best_purchase["total_value"]
+    confidence = 6.0
+    if val >= 1_000_000:    confidence = 9.0
+    elif val >= 500_000:    confidence = 8.5
+    elif val >= 200_000:    confidence = 8.0
+    elif val >= 100_000:    confidence = 7.5
+    elif val >= 50_000:     confidence = 7.0
+
+    if any(t in insider_role for t in ("CEO", "President", "CFO", "CTO", "COO")):
+        confidence = min(9.5, confidence + 0.5)
+
+    filing_url = (
+        f"https://www.sec.gov/Archives/edgar/data/"
+        f"{filing.get('company_cik', '')}/"
+        f"{filing.get('accession_clean', '')}/"
+        f"{filing.get('xml_filename', '')}"
+    )
+
+    return {
+        "ticker": ticker,
+        "company_name": company_name,
+        "insider_name": insider_name,
+        "insider_role": insider_role,
+        "transaction_type": best_purchase["transaction_type"],
+        "shares": best_purchase["shares"],
+        "price_per_share": best_purchase["price_per_share"],
+        "total_value": best_purchase["total_value"],
+        "transaction_date": best_purchase["transaction_date"],
+        "filing_url": filing_url,
+        "signal": "insider_buy",
+        "tier": 1,
+        "confidence": confidence,
+    }
+
+
+def _clean_display_name(name: str) -> str:
+    """Elimină CIK și ticker din display_name."""
+    # Format: "COMPANY NAME  (TICKER)  (CIK 0001234567)"
+    clean = re.sub(r'\s*\(CIK[^)]+\)', '', name)
+    clean = re.sub(r'\s*\([A-Z]{1,5}(?:,[A-Z]{1,5})*\)', '', clean)
+    return clean.strip()
+
+
+def _extract_ticker_from_name(display_name: str) -> str:
+    """Extrage ticker din display_name dacă e prezent."""
+    # Format: "COMPANY NAME  (TICKER)  (CIK ...)"
+    match = re.search(r'\(([A-Z]{1,5})\)\s+\(CIK', display_name)
+    if match:
+        return match.group(1)
+    return ""
 
 
 def get_insider_activity_for_ticker(ticker: str, days_back: int = 7) -> dict:
-    """
-    Helper: returnează activitatea insider pentru un ticker specific.
-    """
     triggers = collect_insider_triggers(days_back=days_back)
     ticker_triggers = [t for t in triggers if t.get("ticker") == ticker.upper()]
 
