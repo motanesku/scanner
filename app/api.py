@@ -186,3 +186,37 @@ def debug_earnings_raw2():
         "earnings_ts": r.json().get("chart", {}).get("result", [{}])[0].get("meta", {}).get("earningsTimestamp") if r.ok else None,
         "raw": r.json() if r.ok else r.text[:300]
     }    
+
+@app.get("/api/debug/earnings-raw3")
+def debug_earnings_raw3():
+    import requests
+    from datetime import datetime, timezone
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+        "Accept": "application/json"
+    }
+    
+    # Tickere cu earnings probabile în aprilie/mai
+    test_tickers = ["JPM", "GS", "MS", "BAC", "NFLX", "TSLA", "ASML", "TSM"]
+    results = {}
+    
+    for ticker in test_tickers:
+        try:
+            r = requests.get(
+                f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}",
+                headers=headers,
+                params={"interval": "1d", "range": "5d"},
+                timeout=10
+            )
+            if r.ok:
+                meta = r.json().get("chart", {}).get("result", [{}])[0].get("meta", {})
+                ts = meta.get("earningsTimestamp")
+                results[ticker] = {
+                    "earningsTimestamp": ts,
+                    "earningsDate": datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d") if ts else None
+                }
+        except Exception as e:
+            results[ticker] = {"error": str(e)}
+    
+    return results
