@@ -141,3 +141,48 @@ def debug_earnings_raw():
         "status": r.status_code,
         "response": r.json() if r.ok else r.text[:500]
     }
+@app.get("/api/debug/earnings-polygon")
+def debug_earnings_polygon():
+    import requests
+    from datetime import datetime, timezone, timedelta
+    
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    future = (datetime.now(timezone.utc) + timedelta(days=21)).strftime("%Y-%m-%d")
+    
+    r = requests.get(
+        "https://api.polygon.io/vX/reference/financials",
+        params={
+            "apiKey": "l1oXhYe6KwprlwpIs8DUakKIj7w9SUmx",
+            "filing_date.gte": today,
+            "filing_date.lte": future,
+            "limit": 10
+        },
+        timeout=15
+    )
+    
+    return {
+        "status": r.status_code,
+        "response": r.json() if r.ok else r.text[:500]
+    }
+@app.get("/api/debug/earnings-raw2")
+def debug_earnings_raw2():
+    import requests
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+        "Accept": "application/json"
+    }
+    
+    # v8/finance/chart returnează earningsTimestamp în meta
+    r = requests.get(
+        "https://query1.finance.yahoo.com/v8/finance/chart/NVDA",
+        headers=headers,
+        params={"interval": "1d", "range": "5d"},
+        timeout=15
+    )
+    
+    return {
+        "status": r.status_code,
+        "earnings_ts": r.json().get("chart", {}).get("result", [{}])[0].get("meta", {}).get("earningsTimestamp") if r.ok else None,
+        "raw": r.json() if r.ok else r.text[:300]
+    }    
