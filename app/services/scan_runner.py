@@ -14,6 +14,18 @@ from app.engines.trigger_engine import classify_triggers
 from app.engines.theme_mapper import map_triggers_to_opportunities
 from app.engines.trigger_stack_builder import enrich_opportunities_with_trigger_stack
 
+from app.collectors.news_collector import collect_news_triggers
+from app.collectors.sec_filings import collect_filings
+from app.collectors.market_data import collect_market_data
+from app.collectors.insider_collector import collect_insider_triggers   # ← ADAUGĂ
+ 
+from app.parsers.news_parser import parse_news
+from app.parsers.filing_parser import parse_filings
+ 
+from app.engines.trigger_engine import classify_triggers
+from app.engines.theme_mapper import map_triggers_to_opportunities
+from app.engines.trigger_stack_builder import enrich_opportunities_with_trigger_stack
+ 
 from app.scoring.catalyst_score import calculate_catalyst_score
 from app.scoring.narrative_score import calculate_narrative_score
 from app.scoring.market_score import calculate_market_score
@@ -25,14 +37,17 @@ def run_scan():
     raw_news = collect_news_triggers()
     classified_triggers = classify_triggers(raw_news)
 
-    # 2) filing-uri
+     # 2) filing-uri SEC
     filings = collect_filings()
     parsed_filings = parse_filings(filings)
 
-    # 3) oportunități mapate din teme
-    mapped_opportunities = map_triggers_to_opportunities(classified_triggers)
-    enriched_opportunities = enrich_opportunities_with_trigger_stack(mapped_opportunities)
+    # 2b) insider triggers Form 4 — colectăm o singură dată și pasăm mai jos
+    insider_triggers = collect_insider_triggers(days_back=2)
 
+    # 3) oportunități mapate din teme + enrichment cu insider real
+     mapped_opportunities = map_triggers_to_opportunities(classified_triggers)
+     enriched_opportunities = enrich_opportunities_with_trigger_stack(mapped_opportunities,insider_triggers=insider_triggers)
+                                                                      
     # 4) univers ticker
     tickers = []
     for opp in enriched_opportunities:
