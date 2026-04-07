@@ -304,3 +304,44 @@ def debug_earnings_raw():
         }
     
     return results
+    
+@app.get("/api/debug/earnings-sec")
+def debug_earnings_sec():
+    """Earnings recente din SEC EDGAR 8-K Item 2.02"""
+    import requests
+    from datetime import datetime, timezone, timedelta
+    
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    start = (datetime.now(timezone.utc) - timedelta(days=3)).strftime("%Y-%m-%d")
+    
+    headers = {"User-Agent": "scanner-mvp/1.0 danut.fagadau@gmail.com"}
+    
+    # 8-K cu Item 2.02 = Results of Operations (earnings announcement)
+    r = requests.get(
+        "https://efts.sec.gov/LATEST/search-index",
+        headers=headers,
+        params={
+            "forms": "8-K",
+            "dateRange": "custom",
+            "startdt": start,
+            "enddt": today,
+            "hits.hits.total": 20,
+        },
+        timeout=15
+    )
+    
+    if not r.ok:
+        return {"status": r.status_code, "error": r.text[:200]}
+    
+    hits = r.json().get("hits", {}).get("hits", [])
+    results = []
+    for h in hits[:10]:
+        src = h.get("_source", {})
+        results.append({
+            "company": src.get("display_names", []),
+            "items": src.get("items", []),
+            "file_date": src.get("file_date"),
+            "id": h.get("_id")
+        })
+    
+    return {"count": len(hits), "sample": results}
