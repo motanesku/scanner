@@ -7,6 +7,7 @@ from app.collectors.news_collector import collect_news_triggers
 from app.collectors.sec_filings import collect_filings
 from app.collectors.market_data import collect_market_data
 from app.collectors.insider_collector import collect_insider_triggers
+from app.collectors.earnings_collector import get_earnings_calendar
 
 from app.parsers.news_parser import parse_news
 from app.parsers.filing_parser import parse_filings
@@ -37,15 +38,22 @@ def run_scan():
     log_info(f"[Scan] SEC filings: {len(parsed_filings)}")
 
     # ── 2b. Insider triggers Form 4 ──────────────────────────────
-    # Colectăm o singură dată și pasăm mai jos — evităm duplicate calls
     insider_triggers = collect_insider_triggers(days_back=2)
     log_info(f"[Scan] Insider triggers (Form 4): {len(insider_triggers)}")
 
-    # ── 3. Oportunități mapate din teme ──────────────────────────
-    mapped_opportunities = map_triggers_to_opportunities(classified_triggers)
+    # ── 2c. Earnings triggers 8-K ────────────────────────────────
+    earnings_triggers = get_earnings_calendar()
+    log_info(f"[Scan] Earnings triggers (8-K): {len(earnings_triggers)}")
+
+    # ── 3. Oportunități mapate EXCLUSIV din triggere reale ────────
+    mapped_opportunities = map_triggers_to_opportunities(
+        classified_triggers,
+        insider_triggers=insider_triggers,
+        earnings_triggers=earnings_triggers,
+    )
     enriched_opportunities = enrich_opportunities_with_trigger_stack(
         mapped_opportunities,
-        insider_triggers=insider_triggers  # pasăm explicit, fără re-fetch
+        insider_triggers=insider_triggers
     )
     log_info(f"[Scan] Opportunities after enrichment: {len(enriched_opportunities)}")
 
