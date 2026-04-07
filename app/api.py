@@ -76,3 +76,11 @@ def root():
             "/api/scanner/run-now"
         ]
     }
+@app.get("/api/debug/insider")
+def debug_insider():
+    from app.collectors.insider_collector import collect_insider_triggers
+    triggers = collect_insider_triggers(days_back=3)
+    return {
+        "count": len(triggers),
+        "triggers": triggers[:5]
+    }
