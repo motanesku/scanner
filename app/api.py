@@ -220,3 +220,36 @@ def debug_earnings_raw3():
             results[ticker] = {"error": str(e)}
     
     return results
+    
+@app.get("/api/debug/earnings-polygon2")
+def debug_earnings_polygon2():
+    import requests
+    from datetime import datetime, timezone, timedelta
+    
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    future = (datetime.now(timezone.utc) + timedelta(days=21)).strftime("%Y-%m-%d")
+    
+    # Endpoint corect pentru earnings calendar
+    r = requests.get(
+        "https://api.polygon.io/v2/reference/earnings",
+        params={
+            "apiKey": "l1oXhYe6KwprlwpIs8DUakKIj7w9SUmx",
+            "date.gte": today,
+            "date.lte": future,
+            "limit": 20
+        },
+        timeout=15
+    )
+    
+    # Alternativ: earnings per ticker specific
+    r2 = requests.get(
+        "https://api.polygon.io/v3/reference/dividends",
+        params={"apiKey": "l1oXhYe6KwprlwpIs8DUakKIj7w9SUmx", "ticker": "NVDA"},
+        timeout=15
+    )
+    
+    return {
+        "earnings_status": r.status_code,
+        "earnings_response": r.json() if r.ok else r.text[:300],
+        "div_status": r2.status_code
+    }
