@@ -34,7 +34,7 @@ def collect_market_data(tickers=None):
         results[ticker] = _fetch_prev_bar_with_retry(ticker, headers)
 
         # mic delay ca să reducem riscul de rate limit
-        time.sleep(0.25)
+        time.sleep(1.2)
 
     return results
 
