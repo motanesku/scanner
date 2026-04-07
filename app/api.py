@@ -281,29 +281,15 @@ def debug_insider_raw():
         "sample_parsed": results
     }
 
-
 @app.get("/api/debug/earnings-raw")
 def debug_earnings_raw():
-    """Testează Nasdaq earnings calendar"""
-    from app.collectors.earnings_collector import _fetch_nasdaq_earnings_for_date
-    from datetime import datetime, timezone, timedelta
-    
-    results = {}
-    now = datetime.now(timezone.utc)
-    
-    # Testează 3 zile
-    for i in range(0, 4):
-        target = now + timedelta(days=i)
-        if target.weekday() >= 5:
-            continue
-        date_str = target.strftime("%Y-%m-%d")
-        daily = _fetch_nasdaq_earnings_for_date(date_str)
-        results[date_str] = {
-            "count": len(daily),
-            "sample": list(daily.items())[:5]
-        }
-    
-    return results
+    """Testează SEC EDGAR 8-K earnings collector"""
+    from app.collectors.earnings_collector import get_earnings_calendar
+    results = get_earnings_calendar()
+    return {
+        "count": len(results),
+        "sample": dict(list(results.items())[:10])
+    }
     
 @app.get("/api/debug/earnings-sec")
 def debug_earnings_sec():
