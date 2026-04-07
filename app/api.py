@@ -100,3 +100,44 @@ def debug_polygon():
     from app.collectors.market_data import collect_market_data
     data = collect_market_data(["NVDA", "AMD", "TSLA"])
     return data
+
+@app.get("/api/debug/insider-raw")
+def debug_insider_raw():
+    import requests
+    from datetime import datetime, timezone, timedelta
+    
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    yesterday = (datetime.now(timezone.utc) - timedelta(days=2)).strftime("%Y-%m-%d")
+    
+    headers = {"User-Agent": "scanner-mvp/1.0 danut.fagadau@gmail.com"}
+    
+    # Test 1: EFTS search
+    r1 = requests.get(
+        "https://efts.sec.gov/LATEST/search-index",
+        headers=headers,
+        params={"forms": "4", "dateRange": "custom", "startdt": yesterday, "enddt": today},
+        timeout=15
+    )
+    
+    return {
+        "efts_status": r1.status_code,
+        "efts_sample": r1.json() if r1.ok else r1.text[:500]
+    }
+
+@app.get("/api/debug/earnings-raw")
+def debug_earnings_raw():
+    import requests
+    
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+    
+    r = requests.get(
+        "https://query1.finance.yahoo.com/v7/finance/quote",
+        headers=headers,
+        params={"symbols": "NVDA,MSFT,AAPL", "fields": "earningsTimestamp,shortName"},
+        timeout=15
+    )
+    
+    return {
+        "status": r.status_code,
+        "response": r.json() if r.ok else r.text[:500]
+    }
