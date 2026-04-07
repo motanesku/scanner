@@ -78,23 +78,40 @@ def run_scanner_now_post():
 
 
 import threading
+import traceback
+
+# Variabilă globală pentru status scan
+scan_status = {"running": False, "last_error": None, "last_run": None}
 
 @app.get("/api/scanner/run-now")
 def run_scanner_now_get():
     def run_in_background():
+        global scan_status
+        scan_status["running"] = True
+        scan_status["last_error"] = None
         try:
             run_scan()
+            scan_status["last_run"] = "success"
         except Exception as e:
-            print(f"[Scanner] Background error: {e}")
+            scan_status["last_error"] = traceback.format_exc()
+            scan_status["last_run"] = "error"
+        finally:
+            scan_status["running"] = False
     
     thread = threading.Thread(target=run_in_background, daemon=True)
     thread.start()
     
-    return {
-        "status": "started",
-        "message": "Scanner started. Check /api/scanner/results in ~90 seconds."
-    }
+    return {"status": "started", "message": "Check /api/scanner/status for progress."}
 
+
+@app.get("/api/scanner/status")
+def scanner_status():
+    return {
+        "running": scan_status["running"],
+        "last_run": scan_status["last_run"],
+        "last_error": scan_status["last_error"],
+    }
+    
 # ── Debug endpoints (permanente) ──────────────────────────────────
 
 @app.get("/api/debug/polygon")
