@@ -253,3 +253,54 @@ def debug_earnings_polygon2():
         "earnings_response": r.json() if r.ok else r.text[:300],
         "div_status": r2.status_code
     }
+
+# Adaugă acestea la sfârșitul app/api.py
+
+@app.get("/api/debug/insider-raw")
+def debug_insider_raw():
+    """Testează EFTS fetch + XML parsing Form 4"""
+    from app.collectors.insider_collector import _fetch_recent_form4_filings, _parse_form4_filing
+    
+    filings = _fetch_recent_form4_filings(days_back=2)
+    
+    if not filings:
+        return {"error": "No filings found", "count": 0}
+    
+    # Încearcă să parseze primele 5
+    results = []
+    for filing in filings[:5]:
+        parsed = _parse_form4_filing(filing)
+        results.append({
+            "filing": filing,
+            "parsed": parsed,
+            "xml_url": f"https://www.sec.gov/Archives/edgar/data/{filing.get('company_cik')}/{filing.get('accession_clean')}/{filing.get('xml_filename')}"
+        })
+    
+    return {
+        "total_filings_found": len(filings),
+        "sample_parsed": results
+    }
+
+
+@app.get("/api/debug/earnings-raw")
+def debug_earnings_raw():
+    """Testează Nasdaq earnings calendar"""
+    from app.collectors.earnings_collector import _fetch_nasdaq_earnings_for_date
+    from datetime import datetime, timezone, timedelta
+    
+    results = {}
+    now = datetime.now(timezone.utc)
+    
+    # Testează 3 zile
+    for i in range(0, 4):
+        target = now + timedelta(days=i)
+        if target.weekday() >= 5:
+            continue
+        date_str = target.strftime("%Y-%m-%d")
+        daily = _fetch_nasdaq_earnings_for_date(date_str)
+        results[date_str] = {
+            "count": len(daily),
+            "sample": list(daily.items())[:5]
+        }
+    
+    return results
