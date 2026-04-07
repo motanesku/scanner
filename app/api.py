@@ -76,11 +76,27 @@ def root():
             "/api/scanner/run-now"
         ]
     }
+
 @app.get("/api/debug/insider")
 def debug_insider():
     from app.collectors.insider_collector import collect_insider_triggers
     triggers = collect_insider_triggers(days_back=3)
     return {
         "count": len(triggers),
-        "triggers": triggers[:5]
+        "sample": triggers[:3]
     }
+
+@app.get("/api/debug/earnings")
+def debug_earnings():
+    from app.collectors.earnings_collector import get_earnings_calendar
+    results = get_earnings_calendar(window_days=14)
+    return {
+        "count": len(results),
+        "results": results
+    }
+
+@app.get("/api/debug/polygon")
+def debug_polygon():
+    from app.collectors.market_data import collect_market_data
+    data = collect_market_data(["NVDA", "AMD", "TSLA"])
+    return data
