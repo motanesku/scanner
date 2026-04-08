@@ -35,40 +35,41 @@ def is_investable(opp: dict) -> bool:
     """
     Filtrează oportunitățile sub standardul minim de investabilitate.
 
-    Filtre hard (elimină complet):
-    - Preț < $2.0 → penny stock
-    - Volum < 300K → lichiditate insuficientă
-    - Pure theme trigger fără nicio confirmare → zgomot
+    Filtru principal: daily turnover = price × volume >= $5M
+    Acesta elimină micro-cap noise fără să atingă large/mid cap.
 
-    Dacă nu avem date Polygon (429) → păstrăm, scorul e deja penalizat.
+    Exemple:
+    - APP $410 × 2.9M = $1.2B → KEEP
+    - INSM $163 × 1.3M = $220M → KEEP
+    - MVIS $0.59 × 4.9M = $2.9M → ELIMINATE
+    - IKT $1.76 × 730K = $1.2M → ELIMINATE
+    - PPIH $30 × 40K = $1.2M → ELIMINATE
+
+    Dacă nu avem date Polygon (429) → păstrăm cu penalizare de scor.
     """
     md = opp.get("market_data", {})
     price = md.get("price")
     volume = md.get("volume")
     status = md.get("status")
-
-    # Dacă Polygon a dat 429 sau eroare → nu știm, păstrăm
-    if status != "ok":
-        # Dar eliminăm dacă trigger stack e pur theme fără nimic real
-        trigger_stack = opp.get("trigger_stack", [])
-        has_real_trigger = any(
-            t != "Theme Trigger" for t in trigger_stack
-        )
-        if not has_real_trigger:
-            return False
-        return True
-
-    # Avem date reale — aplicăm filtrele hard
-    if price is not None and price < 2.0:
-        return False
-
-    if volume is not None and volume < 300_000:
-        return False
-
-    # Pure theme trigger fără confirmare → eliminăm
     trigger_stack = opp.get("trigger_stack", [])
+
+    # Trigger pur theme fără nicio confirmare → eliminăm indiferent
     has_real_trigger = any(t != "Theme Trigger" for t in trigger_stack)
     if not has_real_trigger:
+        return False
+
+    # Fără date Polygon → păstrăm (scorul e deja penalizat cu -10)
+    if status != "ok" or price is None or volume is None:
+        return True
+
+    # Penny stock hard filter
+    if price < 2.0:
+        return False
+
+    # Daily turnover filter — elimină micro-cap fără să afecteze large/mid cap
+    # $5M/zi = minimum pentru o companie tranzacționabilă serios
+    daily_turnover = price * volume
+    if daily_turnover < 5_000_000:
         return False
 
     return True
