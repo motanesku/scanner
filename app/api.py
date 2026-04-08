@@ -286,3 +286,15 @@ def debug_insider_txn():
                 txn_data[child.tag] = child.text.strip()
         txns.append(txn_data)
     return {"non_derivative": txns}
+
+@app.get("/api/debug/sec-sic")
+def debug_sec_sic():
+    """Testează SEC EDGAR SIC enrichment pentru tickers reprezentative"""
+    from app.collectors.sec_enricher import enrich_with_sic
+    test_tickers = ["APP", "AEHR", "NRIX", "OGS", "INSM", "IAC", "ASO", "GBX", "VISN"]
+    result = enrich_with_sic(test_tickers)
+    return {
+        "count": len(result),
+        "results": {t: {"sic_code": v[0], "sic_description": v[1]} for t, v in result.items()},
+        "missing": [t for t in test_tickers if t not in result]
+    }
