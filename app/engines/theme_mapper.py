@@ -9,7 +9,7 @@
 # 4. "General Market" — fallback (scor penalizat)
 
 from app.models import Trigger, Opportunity
-from app.engines.sic_theme_mapper import get_theme_for_ticker, is_investable_sector
+from app.engines.sic_theme_mapper import get_theme_for_ticker
 from app.engines.theme_detector import detect_theme_from_text
 from app.data.ticker_universe import get_ticker_sic
 from app.engines.entity_resolver import get_universe
@@ -59,6 +59,7 @@ def map_triggers_to_opportunities(
     seen = set()  # ticker — un ticker apare o singură dată
 
     # ── Tier 1: Insider Buy (Form 4) ─────────────────────────────
+    # Insider buy NICIODATĂ nu se exclude — e cel mai valoros semnal
     if insider_triggers:
         for t in insider_triggers:
             ticker = t.get("ticker", "").upper()
@@ -68,9 +69,11 @@ def map_triggers_to_opportunities(
             company_name = t.get("company_name", ticker)
             theme, subtheme = _resolve_theme(ticker, company_name, company_name)
 
+            # Dacă tema e None (exclus de override), fallback la General Market
+            # Insider buy e prea important ca să fie pierdut
             if theme is None:
-                log_info(f"[Mapper] Insider {ticker} excluded (sector filter)")
-                continue
+                theme, subtheme = "General Market", "Insider Signal"
+                log_info(f"[Mapper] Insider {ticker} — sector excluded but keeping (insider buy)")
 
             seen.add(ticker)
             opportunities.append(Opportunity(
