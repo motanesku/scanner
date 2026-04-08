@@ -22,7 +22,7 @@ from app.scoring.market_score import calculate_market_score
 from app.scoring.risk_score import calculate_risk_score
 
 from app.utils.logger import log_info, log_success
-from app.collectors.volume_history import update_history, get_history_stats
+from app.collectors.volume_history import save_volume_history, get_volume_history
 from app.collectors.volume_spike_collector import collect_volume_spike_triggers
 from app.services.haiku_enricher import enrich_with_haiku
 
@@ -176,21 +176,24 @@ def run_scan():
     log_info(f"[Scan] Market data preloaded: {n_tickers} tickers available")
     market_data = collect_market_data(tickers)
 
-    # ── 5b. Volume history update ─────────────────────────────
-    # Salvează datele de azi în history local pentru spike detection
-    from app.collectors.market_data import _get_grouped_daily, _grouped_cache_date
-    grouped_data = _get_grouped_daily()
+    # ── 5b. Volume history → D1 via Worker ──────────────────────
+    # Salvează volumele zilei în D1 (persistent cross-deploy)
+    from app.collectors.market_data import get_cached_grouped_data
+    from datetime import datetime, timezone
+    grouped_data = get_cached_grouped_data()
+    today_str = datetime.now(timezone.utc).strftime('%Y-%m-%d')
     if grouped_data:
-        from datetime import datetime, timezone
-        today_str = datetime.now(timezone.utc).strftime('%Y-%m-%d')
-        update_history(grouped_data, today_str)
-        log_info(f"[Scan] Volume history updated — {get_history_stats()}")
+        saved_ok = save_volume_history(grouped_data, today_str)
+        log_info(f"[Scan] Volume history saved to D1: {saved_ok}")
 
-    # ── 5c. Volume spike triggers ─────────────────────────────
-    # Detectează spikes față de media istorică acumulată
-    volume_spike_triggers = collect_volume_spike_triggers(grouped_data)
+    # ── 5c. Volume spike triggers ─────────────────────────────────
+    # Detectează spikes vs. media istorică din D1
+    # tickers_to_check = tickerele din scan (nu toți 12K)
+    volume_spike_triggers = collect_volume_spike_triggers(
+        grouped_data,
+        tickers_to_check=tickers,  # doar tickerele relevante din scan
+    )
     log_info(f"[Scan] Volume spike triggers: {len(volume_spike_triggers)}")
-    # Adaugă spike triggers la classified_triggers pentru theme_mapper
     classified_triggers.extend(volume_spike_triggers)
 
     # ── 6. Parsed news per ticker ────────────────────────────────
