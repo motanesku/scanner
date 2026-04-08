@@ -1,111 +1,186 @@
 # File: app/collectors/market_data.py
+#
+# Market data via Polygon grouped daily endpoint.
+# UN SINGUR REQUEST pentru toată piața US în loc de N requests per ticker.
+#
+# Endpoint: GET /v2/aggs/grouped/locale/us/market/stocks/{date}
+# Returnează OHLCV pentru toate tickerele active din ziua respectivă.
+# ~12,000 tickers per request, fără rate limit issues.
 
 import requests
 import time
+from datetime import datetime, timezone, timedelta
 from app.config import POLYGON_API_KEY
+from app.utils.logger import log_info, log_warn, log_error
+
+# Cache în memorie — evităm re-descărcarea în același scan
+_grouped_cache: dict = {}
+_grouped_cache_date: str = ""
 
 
-def collect_market_data(tickers=None):
+def collect_market_data(tickers: list[str] | None = None) -> dict:
     """
-    Market data via Polygon previous day bar.
-    - nu blochează scannerul dacă un ticker dă 429
-    - retry scurt
-    - fallback neutru dacă nu merge
+    Returnează market data pentru tickerele cerute.
+
+    Folosește Polygon grouped daily — descarcă toată piața o dată
+    și extrage doar tickerele relevante.
+
+    Returnează:
+    {
+        "NVDA": {
+            "ticker": "NVDA",
+            "price": 177.64,
+            "previous_close": ...,
+            "open": ..., "high": ..., "low": ..., "close": ...,
+            "volume": ...,
+            "avg_volume_5d": ...,  # same as volume (prev day)
+            "vwap": ...,           # volume weighted average price
+            "transactions": ...,   # număr tranzacții
+            "source": "polygon_grouped",
+            "status": "ok"
+        },
+        ...
+    }
     """
-
-    if tickers is None:
-        tickers = ["SPY"]
-
-    results = {}
+    if not tickers:
+        return {}
 
     if not POLYGON_API_KEY:
-        for ticker in tickers:
-            results[ticker] = _empty_result(
-                ticker=ticker,
-                error="Missing POLYGON_API_KEY"
-            )
-        return results
+        return {t: _empty_result(t, error="Missing POLYGON_API_KEY") for t in tickers}
 
-    headers = {
-        "Authorization": f"Bearer {POLYGON_API_KEY}"
-    }
+    # Descarcă grouped data (cu cache)
+    grouped = _get_grouped_daily()
 
+    results = {}
     for ticker in tickers:
-        results[ticker] = _fetch_prev_bar_with_retry(ticker, headers)
+        ticker_upper = ticker.upper()
+        bar = grouped.get(ticker_upper)
 
-        # mic delay ca să reducem riscul de rate limit
-        time.sleep(1.2)
+        if bar:
+            results[ticker_upper] = {
+                "ticker": ticker_upper,
+                "price": bar.get("c"),           # close
+                "previous_close": bar.get("c"),  # same day close ca referință
+                "open": bar.get("o"),
+                "high": bar.get("h"),
+                "low": bar.get("l"),
+                "close": bar.get("c"),
+                "volume": int(bar.get("v", 0)),
+                "avg_volume_5d": int(bar.get("v", 0)),  # aproximare cu ziua curentă
+                "vwap": bar.get("vw"),
+                "transactions": bar.get("n"),
+                "source": "polygon_grouped",
+                "status": "ok"
+            }
+        else:
+            results[ticker_upper] = _empty_result(
+                ticker_upper,
+                status="no_data",
+                error=f"No data for {ticker_upper} in grouped daily"
+            )
 
     return results
 
 
-def _fetch_prev_bar_with_retry(ticker, headers, retries=2):
-    url = f"https://api.polygon.io/v2/aggs/ticker/{ticker}/prev"
+def _get_grouped_daily() -> dict:
+    """
+    Descarcă sau returnează din cache grouped daily data.
+    Cache valid pentru întreaga zi curentă.
+    """
+    global _grouped_cache, _grouped_cache_date
 
-    for attempt in range(retries + 1):
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    # Returnează din cache dacă e aceeași zi
+    if _grouped_cache_date == today and _grouped_cache:
+        log_info(f"[Market] Using cached grouped daily ({len(_grouped_cache)} tickers)")
+        return _grouped_cache
+
+    # Determină data pentru care cerem date
+    # Polygon grouped daily returnează date pentru ziua de tranzacționare anterioară
+    date_str = _get_last_trading_day()
+
+    log_info(f"[Market] Fetching Polygon grouped daily for {date_str}...")
+
+    url = f"https://api.polygon.io/v2/aggs/grouped/locale/us/market/stocks/{date_str}"
+    params = {
+        "apiKey": POLYGON_API_KEY,
+        "adjusted": "true",
+        "include_otc": "false",  # excludem OTC
+    }
+
+    for attempt in range(3):
         try:
-            response = requests.get(url, headers=headers, timeout=20)
+            response = requests.get(url, params=params, timeout=30)
 
             if response.status_code == 429:
-                if attempt < retries:
-                    time.sleep(1 + attempt)
-                    continue
-                return _empty_result(
-                    ticker=ticker,
-                    error=f"429 Too Many Requests for {ticker}"
-                )
-
-            response.raise_for_status()
-            data = response.json()
-
-            results_list = data.get("results", [])
-            if not results_list:
-                return _empty_result(
-                    ticker=ticker,
-                    status="no_data",
-                    error=f"No Polygon data for {ticker}"
-                )
-
-            bar = results_list[0]
-
-            close_price = _safe_float(bar.get("c"))
-            open_price = _safe_float(bar.get("o"))
-            high_price = _safe_float(bar.get("h"))
-            low_price = _safe_float(bar.get("l"))
-            volume = _safe_int(bar.get("v"))
-
-            return {
-                "ticker": ticker,
-                "price": close_price,
-                "previous_close": close_price,
-                "open": open_price,
-                "high": high_price,
-                "low": low_price,
-                "close": close_price,
-                "volume": volume,
-                "avg_volume_5d": volume,
-                "source": "polygon",
-                "status": "ok"
-            }
-
-        except Exception as e:
-            if attempt < retries:
-                time.sleep(1 + attempt)
+                wait = 10 * (attempt + 1)
+                log_warn(f"[Market] Polygon grouped 429 — waiting {wait}s (attempt {attempt + 1})")
+                time.sleep(wait)
                 continue
 
-            return _empty_result(
-                ticker=ticker,
-                error=str(e)
-            )
+            if not response.ok:
+                log_error(f"[Market] Polygon grouped error: {response.status_code}")
+                return {}
 
-    return _empty_result(
-        ticker=ticker,
-        error=f"Unknown Polygon error for {ticker}"
-    )
+            data = response.json()
+            results = data.get("results", [])
+
+            if not results:
+                log_warn(f"[Market] No results for {date_str} — trying previous day")
+                date_str = _get_last_trading_day(skip_days=2)
+                continue
+
+            # Construiește index ticker → bar
+            grouped = {bar["T"]: bar for bar in results if "T" in bar}
+
+            log_info(f"[Market] Grouped daily loaded: {len(grouped)} tickers for {date_str}")
+
+            # Salvează în cache
+            _grouped_cache = grouped
+            _grouped_cache_date = today
+
+            return grouped
+
+        except Exception as e:
+            log_error(f"[Market] Grouped daily error (attempt {attempt + 1}): {e}")
+            if attempt < 2:
+                time.sleep(3)
+            continue
+
+    log_error("[Market] All attempts failed for grouped daily")
+    return {}
 
 
-def _empty_result(ticker, status="error", error=None):
-    payload = {
+def _get_last_trading_day(skip_days: int = 1) -> str:
+    """
+    Returnează ultima zi de tranzacționare (exclude weekend).
+    skip_days=1 → ieri, skip_days=2 → alaltăieri etc.
+    """
+    now = datetime.now(timezone.utc)
+    candidate = now - timedelta(days=skip_days)
+
+    # Skip weekend
+    attempts = 0
+    while candidate.weekday() >= 5 and attempts < 5:  # 5=Sat, 6=Sun
+        candidate -= timedelta(days=1)
+        attempts += 1
+
+    return candidate.strftime("%Y-%m-%d")
+
+
+def preload_market_data() -> int:
+    """
+    Pre-încarcă grouped daily data la startup.
+    Apelat din scan_runner înainte de pipeline.
+    Returnează numărul de tickers disponibili.
+    """
+    grouped = _get_grouped_daily()
+    return len(grouped)
+
+
+def _empty_result(ticker: str, status: str = "error", error: str = "") -> dict:
+    result = {
         "ticker": ticker,
         "price": None,
         "previous_close": None,
@@ -115,29 +190,11 @@ def _empty_result(ticker, status="error", error=None):
         "close": None,
         "volume": None,
         "avg_volume_5d": None,
-        "source": "polygon",
-        "status": status
+        "vwap": None,
+        "transactions": None,
+        "source": "polygon_grouped",
+        "status": status,
     }
-
     if error:
-        payload["error"] = error
-
-    return payload
-
-
-def _safe_float(value):
-    try:
-        if value is None:
-            return None
-        return float(value)
-    except Exception:
-        return None
-
-
-def _safe_int(value):
-    try:
-        if value is None:
-            return None
-        return int(value)
-    except Exception:
-        return None
+        result["error"] = error
+    return result
