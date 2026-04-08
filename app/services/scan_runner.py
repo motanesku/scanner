@@ -437,14 +437,14 @@ def determine_signal(score, risk_score, direct_triggers, confirmation_triggers):
 def build_why_now(signal_origin, ticker, company, theme, has_insider=False):
     if has_insider and signal_origin == "direct":
         return (
-            f"Direct insider buying detected for {ticker} / {company}, "
-            f"combined with active {theme} theme narrative."
+            f"Cumpărare insider detectată pentru {ticker} / {company}, "
+            f"combinată cu narativa activă a temei {theme}."
         )
     if signal_origin == "direct":
-        return f"Direct company-specific trigger detected for {ticker} / {company}."
+        return f"Trigger direct specific companiei detectat pentru {ticker} / {company}."
     return (
-        f"{theme} is active in current news flow, "
-        f"and {company} is mapped as a relevant beneficiary."
+        f"{theme} este activă în fluxul de știri curent, "
+        f"iar {company} este identificată ca beneficiar relevant."
     )
 
 
