@@ -143,6 +143,11 @@ def run_scan():
         tickers = ["SPY"]
 
     # ── 5. Market data ────────────────────────────────────────────
+    # Grouped daily: un singur request Polygon pentru toată piața
+    # Fără 429, fără delay per ticker
+    from app.collectors.market_data import preload_market_data
+    n_tickers = preload_market_data()
+    log_info(f"[Scan] Market data preloaded: {n_tickers} tickers available")
     market_data = collect_market_data(tickers)
 
     # ── 6. Parsed news per ticker ────────────────────────────────
