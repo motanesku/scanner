@@ -137,6 +137,29 @@ def run_scan():
     )
     log_info(f"[Scan] Opportunities after enrichment: {len(enriched_opportunities)}")
 
+    # ── 3b. SEC EDGAR SIC enrichment ─────────────────────────────
+    # Fetch SIC doar pentru tickerele din scan (~20-30 tickers)
+    # Sursa: data.sec.gov/submissions — gratuit, oficial
+    from app.collectors.sec_enricher import enrich_with_sic
+    from app.engines.sic_theme_mapper import get_theme_for_ticker
+    scan_tickers = [opp.ticker for opp in enriched_opportunities]
+    sic_map = enrich_with_sic(scan_tickers)
+    log_info(f"[Scan] SIC enriched: {len(sic_map)}/{len(scan_tickers)} tickers")
+
+    # Aplică tema corectă din SIC pe fiecare oportunitate
+    for opp in enriched_opportunities:
+        sic_data = sic_map.get(opp.ticker)
+        if not sic_data:
+            continue
+        sic_code, sic_desc = sic_data
+        theme_result = get_theme_for_ticker(opp.ticker, sic_code)
+        if theme_result is not None:
+            opp.theme, opp.subtheme = theme_result
+        elif sic_desc:
+            # Sectorul nu e în mapare dar îl descriem corect
+            opp.theme = sic_desc[:50]
+            opp.subtheme = None
+
     # ── 4. Univers tickere ────────────────────────────────────────
     tickers = list({opp.ticker for opp in enriched_opportunities})
     if not tickers:
