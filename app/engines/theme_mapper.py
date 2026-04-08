@@ -1,8 +1,52 @@
 # File: app/engines/theme_mapper.py
+#
+# Mapează triggere → oportunități cu temă corectă.
+#
+# Sursa temei în ordine de prioritate:
+# 1. TICKER_THEME_OVERRIDE — forțat manual
+# 2. SIC code din ticker_universe
+# 3. detect_theme_from_text — din RSS/company name
+# 4. "General Market" — fallback (scor penalizat)
 
 from app.models import Trigger, Opportunity
+from app.engines.sic_theme_mapper import get_theme_for_ticker, is_investable_sector
 from app.engines.theme_detector import detect_theme_from_text
+from app.data.ticker_universe import get_ticker_sic
+from app.engines.entity_resolver import get_universe
 from app.utils.logger import log_info
+
+
+def _resolve_theme(ticker: str, company_name: str, fallback_text: str = "") -> tuple[str, str | None]:
+    """
+    Rezolvă tema pentru un ticker.
+    Returnează (theme_name, subtheme).
+    Returnează (None, None) dacă tickerul e exclus.
+    """
+    universe = get_universe()
+    sic_code, sic_desc = get_ticker_sic(ticker, universe)
+
+    # 1. SIC theme mapper (include override manual și excludere)
+    result = get_theme_for_ticker(ticker, sic_code)
+
+    if result is None:
+        return None, None  # exclus explicit
+
+    if result != ("General Market", "Macro"):
+        return result  # temă specifică din SIC sau override
+
+    # 2. Fallback la RSS/text dacă SIC dă General Market
+    if fallback_text:
+        theme_name, subthemes, confidence = detect_theme_from_text(fallback_text.lower())
+        if theme_name and theme_name != "General Market" and confidence >= 5.0:
+            return theme_name, subthemes[0] if subthemes else None
+
+    # 3. SIC description ca hint suplimentar
+    if sic_desc:
+        theme_name, subthemes, confidence = detect_theme_from_text(sic_desc.lower())
+        if theme_name and theme_name != "General Market":
+            return theme_name, subthemes[0] if subthemes else None
+
+    return "General Market", "Macro"
 
 
 def map_triggers_to_opportunities(
@@ -12,30 +56,28 @@ def map_triggers_to_opportunities(
 ) -> list[Opportunity]:
 
     opportunities = []
-    seen = set()  # (ticker)
+    seen = set()  # ticker — un ticker apare o singură dată
 
     # ── Tier 1: Insider Buy (Form 4) ─────────────────────────────
     if insider_triggers:
         for t in insider_triggers:
             ticker = t.get("ticker", "").upper()
-            if not ticker:
+            if not ticker or ticker in seen:
                 continue
 
             company_name = t.get("company_name", ticker)
-            theme_hint, subthemes, _ = detect_theme_from_text(
-                f"{company_name} {ticker}"
-            )
+            theme, subtheme = _resolve_theme(ticker, company_name, company_name)
 
-            key = ticker
-            if key in seen:
+            if theme is None:
+                log_info(f"[Mapper] Insider {ticker} excluded (sector filter)")
                 continue
-            seen.add(key)
 
+            seen.add(ticker)
             opportunities.append(Opportunity(
                 ticker=ticker,
                 company_name=company_name,
-                theme=theme_hint,
-                subtheme=subthemes[0] if subthemes else None,
+                theme=theme,
+                subtheme=subtheme,
                 role="Direct Signal",
                 positioning="Insider Buy",
                 market_cap_bucket="Unknown",
@@ -50,18 +92,17 @@ def map_triggers_to_opportunities(
     if earnings_triggers:
         for ticker, data in earnings_triggers.items():
             ticker = ticker.upper()
-            if not ticker:
+            if not ticker or ticker in seen:
                 continue
 
             company_name = data.get("company_name", ticker)
-            theme_hint, subthemes, _ = detect_theme_from_text(
-                f"{company_name} {ticker}"
-            )
+            theme, subtheme = _resolve_theme(ticker, company_name, company_name)
 
-            key = ticker
-            if key in seen:
+            if theme is None:
+                log_info(f"[Mapper] Earnings {ticker} ({company_name}) excluded (sector filter)")
                 continue
-            seen.add(key)
+
+            seen.add(ticker)
 
             trigger_type = data.get("trigger_type", "earnings_reported")
             role = "Earnings Reporter" if trigger_type == "earnings_reported" else "Earnings Upcoming"
@@ -69,8 +110,8 @@ def map_triggers_to_opportunities(
             opportunities.append(Opportunity(
                 ticker=ticker,
                 company_name=company_name,
-                theme=theme_hint,
-                subtheme=subthemes[0] if subthemes else None,
+                theme=theme,
+                subtheme=subtheme,
                 role=role,
                 positioning="Earnings Catalyst",
                 market_cap_bucket="Unknown",
@@ -87,8 +128,8 @@ def map_triggers_to_opportunities(
             continue
 
         metadata = trigger.metadata or {}
-        primary_ticker = metadata.get("primary_ticker")
         tickers_with_conf = metadata.get("tickers", [])
+        primary_ticker = metadata.get("primary_ticker")
 
         if not primary_ticker:
             continue
@@ -98,23 +139,24 @@ def map_triggers_to_opportunities(
         entity_confidence = metadata.get("entity_confidence", 0)
         has_direct_event = metadata.get("has_direct_event", False)
 
-        # Skip știri sell fără eveniment direct clar
-        # (prea mult risc de fals pozitiv)
         if signal_side == "sell" and not has_direct_event:
             continue
 
-        theme_hint = trigger.theme_hint
-        subthemes = trigger.subthemes
-
-        # Procesează toate tickerele din headline (max 3)
         for ticker, conf in tickers_with_conf:
             ticker = ticker.upper()
-            key = ticker
-            if key in seen:
+            if ticker in seen:
                 continue
-            seen.add(key)
 
-            # Priority în funcție de calitatea semnalului
+            theme, subtheme = _resolve_theme(
+                ticker, ticker,
+                f"{trigger.headline} {trigger.theme_hint}"
+            )
+
+            if theme is None:
+                continue
+
+            seen.add(ticker)
+
             if entity_confidence == 10 and has_direct_event:
                 priority = "High"
                 role = "Direct News Signal"
@@ -128,8 +170,8 @@ def map_triggers_to_opportunities(
             opportunities.append(Opportunity(
                 ticker=ticker,
                 company_name=ticker,
-                theme=theme_hint,
-                subtheme=subthemes[0] if subthemes else None,
+                theme=theme,
+                subtheme=subtheme,
                 role=role,
                 positioning=f"News: {trigger_category} ({signal_side})",
                 market_cap_bucket="Unknown",
@@ -140,5 +182,5 @@ def map_triggers_to_opportunities(
                 status="WATCH"
             ))
 
-    log_info(f"[Mapper] {len(opportunities)} opportunities generated")
+    log_info(f"[Mapper] {len(opportunities)} opportunities after sector filter")
     return opportunities
