@@ -1,139 +1,145 @@
 # File: app/collectors/volume_history.py
 #
-# Acumulează volume history din Polygon grouped daily.
-# Salvează zilnic în data/volume_history.json.
-# După 20 zile avem media robustă per ticker — zero requests extra.
+# Volume history via Cloudflare D1 (prin Worker).
+# Persistent cross-deploy — nu se pierde la Railway redeploy.
+#
+# Workflow:
+# 1. După fiecare scan: trimite volumele zilei la Worker → D1
+# 2. La scan următor: citește history din Worker → detectează spikes
 
-import json
+import os
 import time
-from pathlib import Path
-from datetime import datetime, timezone
+import requests
 from app.utils.logger import log_info, log_warn, log_error
 
-HISTORY_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "volume_history.json"
-HISTORY_PATH.parent.mkdir(exist_ok=True)
+WORKER_URL = os.environ.get(
+    "WORKER_URL",
+    "https://portfolio-api.danut-fagadau.workers.dev"
+)
 
-# Câte zile păstrăm în history
-MAX_HISTORY_DAYS = 30
-# Minim zile pentru a calcula media
+# Nu avem nevoie de auth pentru volume history — e date publice
+HEADERS = {"Content-Type": "application/json"}
+
+# Minim zile pentru a calcula media robustă
 MIN_DAYS_FOR_AVG = 5
 
 
-def load_history() -> dict:
+def save_volume_history(grouped_data: dict, date_str: str) -> bool:
     """
-    Încarcă history din fișier local.
+    Trimite volumele zilei la Worker → D1.
 
-    Format:
+    grouped_data = {ticker: bar} din Polygon grouped daily.
+    bar = {"v": volume, "c": close, "vw": vwap, ...}
+
+    Trimite doar tickerele cu volum valid și daily turnover >= $1M
+    (filtrăm garbage înainte de a trimite — nu supraîncărcăm D1).
+    """
+    if not grouped_data:
+        return False
+
+    # Filtrăm și compactăm — trimitem doar ce e relevant
+    tickers_to_save = {}
+    for ticker, bar in grouped_data.items():
+        volume = bar.get("v", 0)
+        close = bar.get("c", 0)
+        vwap = bar.get("vw", 0)
+
+        if not volume or not close:
+            continue
+
+        # Filtrăm micro-cap evident
+        if price_x_vol := close * volume:
+            if price_x_vol < 1_000_000:  # sub $1M zilnic — nu ne interesează
+                continue
+
+        tickers_to_save[ticker] = {
+            "v": int(volume),
+            "c": round(close, 4),
+            "vw": round(vwap, 4) if vwap else None,
+        }
+
+    if not tickers_to_save:
+        log_warn("[VolumeHistory] No valid tickers to save")
+        return False
+
+    log_info(f"[VolumeHistory] Saving {len(tickers_to_save)} tickers for {date_str}...")
+
+    try:
+        r = requests.post(
+            f"{WORKER_URL}/api/volume-history",
+            json={"date": date_str, "tickers": tickers_to_save},
+            headers=HEADERS,
+            timeout=30,
+        )
+        if r.ok:
+            data = r.json()
+            log_info(f"[VolumeHistory] Saved {data.get('saved', 0)} tickers to D1")
+            return True
+        else:
+            log_error(f"[VolumeHistory] Worker error: {r.status_code} — {r.text[:100]}")
+            return False
+    except Exception as e:
+        log_error(f"[VolumeHistory] Save failed: {e}")
+        return False
+
+
+def get_volume_history(tickers: list[str], days: int = 20) -> dict[str, list[dict]]:
+    """
+    Citește history de volum din D1 via Worker.
+
+    Returnează:
     {
         "NVDA": [
-            {"date": "2026-04-07", "volume": 45123456},
-            {"date": "2026-04-08", "volume": 38901234},
+            {"date": "2026-04-07", "volume": 45123456, "close": 177.64, "vwap": 176.5},
             ...
         ],
         ...
     }
     """
-    if not HISTORY_PATH.exists():
-        return {}
-    try:
-        with open(HISTORY_PATH, "r") as f:
-            return json.load(f)
-    except Exception as e:
-        log_warn(f"[VolumeHistory] Load error: {e}")
+    if not tickers:
         return {}
 
+    # Trimitem în chunks de max 50 tickers (URL length limit)
+    CHUNK = 50
+    result = {}
 
-def save_history(history: dict) -> None:
-    """Salvează history în fișier local."""
-    try:
-        with open(HISTORY_PATH, "w") as f:
-            json.dump(history, f, separators=(",", ":"))
-    except Exception as e:
-        log_error(f"[VolumeHistory] Save error: {e}")
+    for i in range(0, len(tickers), CHUNK):
+        chunk = tickers[i:i + CHUNK]
+        try:
+            r = requests.get(
+                f"{WORKER_URL}/api/volume-history",
+                params={"tickers": ",".join(chunk), "days": days},
+                headers=HEADERS,
+                timeout=15,
+            )
+            if r.ok:
+                data = r.json()
+                result.update(data.get("data", {}))
+            else:
+                log_warn(f"[VolumeHistory] Get error: {r.status_code}")
+        except Exception as e:
+            log_error(f"[VolumeHistory] Get failed: {e}")
 
-
-def update_history(grouped_data: dict, date_str: str) -> dict:
-    """
-    Adaugă datele din ziua curentă în history.
-    grouped_data = {ticker: bar_dict} din Polygon grouped daily.
-    Returnează history-ul actualizat.
-    """
-    history = load_history()
-    added = 0
-
-    for ticker, bar in grouped_data.items():
-        volume = bar.get("v")
-        if not volume or volume <= 0:
-            continue
-
-        if ticker not in history:
-            history[ticker] = []
-
-        # Verifică dacă ziua asta e deja în history
-        existing_dates = {entry["date"] for entry in history[ticker]}
-        if date_str in existing_dates:
-            continue
-
-        history[ticker].append({
-            "date": date_str,
-            "volume": int(volume),
-            "close": bar.get("c"),
-            "vwap": bar.get("vw"),
-        })
-
-        # Păstrează doar ultimele MAX_HISTORY_DAYS zile
-        if len(history[ticker]) > MAX_HISTORY_DAYS:
-            history[ticker] = sorted(
-                history[ticker],
-                key=lambda x: x["date"],
-                reverse=True
-            )[:MAX_HISTORY_DAYS]
-
-        added += 1
-
-    log_info(f"[VolumeHistory] Updated {added} tickers for {date_str}")
-    save_history(history)
-    return history
+    return result
 
 
-def get_avg_volume(ticker: str, history: dict | None = None) -> float | None:
-    """
-    Returnează media volumului pe ultimele N zile pentru un ticker.
-    None dacă nu avem suficiente date.
-    """
-    if history is None:
-        history = load_history()
-
-    entries = history.get(ticker.upper(), [])
+def get_avg_volume(ticker: str, history: dict) -> float | None:
+    """Calculează media volumului din history pentru un ticker."""
+    entries = history.get(ticker, [])
     if len(entries) < MIN_DAYS_FOR_AVG:
         return None
-
     volumes = [e["volume"] for e in entries if e.get("volume")]
     if not volumes:
         return None
-
     return sum(volumes) / len(volumes)
 
 
-def get_volume_spike_ratio(ticker: str, current_volume: int, history: dict | None = None) -> float | None:
+def get_volume_spike_ratio(ticker: str, current_volume: int, history: dict) -> float | None:
     """
     Returnează ratio = current_volume / avg_volume.
     2.0 = volum dublu față de medie = spike semnificativ.
-    None dacă nu avem suficiente date.
     """
     avg = get_avg_volume(ticker, history)
     if avg is None or avg <= 0:
         return None
     return current_volume / avg
-
-
-def get_history_stats() -> dict:
-    """Status history pentru debug."""
-    history = load_history()
-    tickers_with_data = {t: len(v) for t, v in history.items() if v}
-    return {
-        "total_tickers": len(tickers_with_data),
-        "tickers_with_20d": sum(1 for v in tickers_with_data.values() if v >= 20),
-        "tickers_with_5d": sum(1 for v in tickers_with_data.values() if v >= 5),
-        "sample": dict(list(tickers_with_data.items())[:5])
-    }
