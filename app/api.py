@@ -298,3 +298,18 @@ def debug_sec_sic():
         "results": {t: {"sic_code": v[0], "sic_description": v[1]} for t, v in result.items()},
         "missing": [t for t in test_tickers if t not in result]
     }
+
+@app.get("/api/debug/volume-history")
+def debug_volume_history():
+    """Status volume history acumulat local"""
+    from app.collectors.volume_history import get_history_stats, load_history
+    stats = get_history_stats()
+    history = load_history()
+    # Sample spikes dacă există date
+    sample_tickers = ["NVDA", "APP", "AEHR", "XOM", "DAL"]
+    sample = {}
+    for t in sample_tickers:
+        entries = history.get(t, [])
+        if entries:
+            sample[t] = {"days": len(entries), "latest": entries[0] if entries else None}
+    return {"stats": stats, "sample": sample}
