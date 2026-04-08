@@ -12,7 +12,7 @@ def map_triggers_to_opportunities(
 ) -> list[Opportunity]:
 
     opportunities = []
-    seen = set()  # (ticker, theme)
+    seen = set()  # (ticker)
 
     # ── Tier 1: Insider Buy (Form 4) ─────────────────────────────
     if insider_triggers:
@@ -26,7 +26,7 @@ def map_triggers_to_opportunities(
                 f"{company_name} {ticker}"
             )
 
-            key = (ticker, theme_hint)
+            key = ticker
             if key in seen:
                 continue
             seen.add(key)
@@ -58,7 +58,7 @@ def map_triggers_to_opportunities(
                 f"{company_name} {ticker}"
             )
 
-            key = (ticker, theme_hint)
+            key = ticker
             if key in seen:
                 continue
             seen.add(key)
@@ -109,7 +109,7 @@ def map_triggers_to_opportunities(
         # Procesează toate tickerele din headline (max 3)
         for ticker, conf in tickers_with_conf:
             ticker = ticker.upper()
-            key = (ticker, theme_hint)
+            key = ticker
             if key in seen:
                 continue
             seen.add(key)
