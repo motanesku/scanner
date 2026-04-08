@@ -1,18 +1,20 @@
 # File: app/services/haiku_enricher.py
 #
 # Generează ai_verdict și why_now personalizat via Claude Haiku.
+# Folosește requests + ThreadPoolExecutor (fără aiohttp).
 # Rulează paralel pentru toate oportunitățile din scan.
-# Cost: ~$0.001 per scan (neglijabil).
 
 import os
+import re
 import json
-import asyncio
-import aiohttp
+import requests
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from app.utils.logger import log_info, log_warn, log_error
 
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 MODEL = "claude-haiku-4-5"
+MAX_WORKERS = 5  # requests paralele
 
 SYSTEM_PROMPT = """Ești un analist de investiții senior care scrie analize concise în limba română.
 Stilul tău: direct, factual, fără exagerări. Maxim 2-3 propoziții per câmp.
@@ -24,12 +26,10 @@ def _build_prompt(opp: dict) -> str:
     price = md.get("price")
     volume = md.get("volume")
     vwap = md.get("vwap")
-    transactions = md.get("transactions")
 
     trigger_stack = opp.get("trigger_stack", [])
     triggers_str = " + ".join(trigger_stack)
 
-    # Context volume
     volume_context = ""
     if price and volume:
         turnover = price * volume / 1_000_000
@@ -39,128 +39,110 @@ def _build_prompt(opp: dict) -> str:
         direction = "peste" if diff_pct > 0 else "sub"
         volume_context += f" Close {direction} VWAP cu {abs(diff_pct):.1f}%."
 
-    return f"""Analizează această oportunitate de investiție și generează:
+    return f"""Analizează această oportunitate și generează în română:
 1. "ai_verdict": teză de investiție în 2-3 propoziții (de ce e sau nu e interesant acum)
-2. "why_now": context specific în 1-2 propoziții (ce se întâmplă concret acum cu această companie)
+2. "why_now": context specific în 1-2 propoziții (ce se întâmplă concret acum)
 
 Date:
 - Ticker: {opp.get('ticker')} — {opp.get('company')}
 - Temă: {opp.get('theme')} / {opp.get('subtheme', 'N/A')}
 - Rol: {opp.get('role')} | Semnal: {opp.get('signal')} | Scor: {opp.get('score')}
 - Trigger stack: {triggers_str}
-- Catalyst score: {opp.get('catalyst_score')} | Narrative score: {opp.get('narrative_score')} | Risk score: {opp.get('risk_score')}
+- Catalyst: {opp.get('catalyst_score')} | Narrative: {opp.get('narrative_score')} | Risk: {opp.get('risk_score')}
 - Preț: ${price} | Volum: {f"{volume:,}" if volume else "N/A"} shares
 - {volume_context}
 
-Răspunde STRICT în format JSON:
+Răspunde STRICT în format JSON fără text extra:
 {{"ai_verdict": "...", "why_now": "..."}}"""
 
 
-async def _enrich_single(session: aiohttp.ClientSession, opp: dict) -> dict:
+def _enrich_single(opp: dict) -> dict:
     """Enrichează o singură oportunitate cu Haiku."""
     ticker = opp.get("ticker", "")
 
     if not ANTHROPIC_API_KEY:
-        opp["ai_verdict"] = "API key lipsă."
+        opp["ai_verdict"] = "ANTHROPIC_API_KEY lipsă."
         return opp
 
     try:
-        payload = {
-            "model": MODEL,
-            "max_tokens": 300,
-            "system": SYSTEM_PROMPT,
-            "messages": [
-                {"role": "user", "content": _build_prompt(opp)}
-            ]
-        }
-
-        headers = {
-            "Content-Type": "application/json",
-            "x-api-key": ANTHROPIC_API_KEY,
-            "anthropic-version": "2023-06-01"
-        }
-
-        async with session.post(
+        response = requests.post(
             ANTHROPIC_URL,
-            json=payload,
-            headers=headers,
-            timeout=aiohttp.ClientTimeout(total=30)
-        ) as resp:
-            if resp.status != 200:
-                body = await resp.text()
-                log_warn(f"[Haiku] {ticker}: HTTP {resp.status} — {body[:100]}")
-                return opp
+            headers={
+                "Content-Type": "application/json",
+                "x-api-key": ANTHROPIC_API_KEY,
+                "anthropic-version": "2023-06-01"
+            },
+            json={
+                "model": MODEL,
+                "max_tokens": 300,
+                "system": SYSTEM_PROMPT,
+                "messages": [
+                    {"role": "user", "content": _build_prompt(opp)}
+                ]
+            },
+            timeout=30
+        )
 
-            data = await resp.json()
-            text = data.get("content", [{}])[0].get("text", "")
+        if response.status_code != 200:
+            log_warn(f"[Haiku] {ticker}: HTTP {response.status_code}")
+            return opp
 
-            # Parse JSON din răspuns
-            # Haiku poate adăuga text în jurul JSON-ului
-            import re
-            json_match = re.search(r'\{[^{}]+\}', text, re.DOTALL)
-            if json_match:
-                parsed = json.loads(json_match.group())
-                opp["ai_verdict"] = parsed.get("ai_verdict", "")
-                opp["why_now"] = parsed.get("why_now", opp.get("why_now", ""))
-                log_info(f"[Haiku] {ticker}: enriched OK")
-            else:
-                log_warn(f"[Haiku] {ticker}: no JSON in response — {text[:100]}")
+        data = response.json()
+        text = data.get("content", [{}])[0].get("text", "")
 
-    except asyncio.TimeoutError:
+        # Extrage JSON din răspuns
+        json_match = re.search(r'\{[^{}]+\}', text, re.DOTALL)
+        if json_match:
+            parsed = json.loads(json_match.group())
+            opp["ai_verdict"] = parsed.get("ai_verdict", "")
+            opp["why_now"] = parsed.get("why_now", opp.get("why_now", ""))
+            log_info(f"[Haiku] {ticker}: OK")
+        else:
+            log_warn(f"[Haiku] {ticker}: no JSON — {text[:80]}")
+
+    except requests.Timeout:
         log_warn(f"[Haiku] {ticker}: timeout")
     except Exception as e:
-        log_error(f"[Haiku] {ticker}: error — {e}")
+        log_error(f"[Haiku] {ticker}: {e}")
 
     return opp
 
 
-async def _enrich_all_async(opportunities: list[dict]) -> list[dict]:
-    """Enrichează toate oportunitățile în paralel."""
-    # Limităm concurența la 5 requests simultan
-    semaphore = asyncio.Semaphore(5)
-
-    async def enrich_with_semaphore(session, opp):
-        async with semaphore:
-            return await _enrich_single(session, opp)
-
-    async with aiohttp.ClientSession() as session:
-        tasks = [enrich_with_semaphore(session, opp) for opp in opportunities]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-
-    # Tratează excepțiile
-    final = []
-    for i, result in enumerate(results):
-        if isinstance(result, Exception):
-            log_error(f"[Haiku] Task {i} failed: {result}")
-            final.append(opportunities[i])  # returnează original
-        else:
-            final.append(result)
-
-    return final
-
-
 def enrich_with_haiku(opportunities: list[dict]) -> list[dict]:
     """
-    Enrichează lista de oportunități cu ai_verdict și why_now personalizat.
-    Rulează async paralel — ~3-5 secunde pentru 15 oportunități.
+    Enrichează lista de oportunități cu ai_verdict și why_now în română.
+    Rulează paralel cu ThreadPoolExecutor — ~5-10 secunde pentru 15 oportunități.
     """
     if not opportunities:
         return opportunities
 
     if not ANTHROPIC_API_KEY:
-        log_warn("[Haiku] No ANTHROPIC_API_KEY — skipping enrichment")
+        log_warn("[Haiku] No ANTHROPIC_API_KEY — skipping")
         return opportunities
 
     log_info(f"[Haiku] Enriching {len(opportunities)} opportunities...")
 
+    results = [None] * len(opportunities)
+
     try:
-        # Rulează async event loop
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        result = loop.run_until_complete(_enrich_all_async(opportunities))
-        loop.close()
-        log_info(f"[Haiku] Enrichment complete for {len(result)} opportunities")
-        return result
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+            future_to_idx = {
+                executor.submit(_enrich_single, opp): i
+                for i, opp in enumerate(opportunities)
+            }
+            for future in as_completed(future_to_idx):
+                idx = future_to_idx[future]
+                try:
+                    results[idx] = future.result()
+                except Exception as e:
+                    log_error(f"[Haiku] Future error idx {idx}: {e}")
+                    results[idx] = opportunities[idx]
+
+        # Fill None cu originalele
+        final = [r if r is not None else opportunities[i] for i, r in enumerate(results)]
+        log_info(f"[Haiku] Done — {len(final)} opportunities enriched")
+        return final
+
     except Exception as e:
         log_error(f"[Haiku] Enrichment failed: {e}")
         return opportunities
