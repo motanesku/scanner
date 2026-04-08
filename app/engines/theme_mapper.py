@@ -1,58 +1,8 @@
 # File: app/engines/theme_mapper.py
-#
-# REWRITE COMPLET — fara lista predefinita de companii.
-#
-# Filozofie corecta (din arhitectura):
-# TRIGGER → TEMA → COMPANIE (descoperita din trigger)
-#
-# Tickerele vin exclusiv din:
-# 1. Triggere news cu ticker explicit mentionat
-# 2. Insider triggers Form 4 (ticker din XML)
-# 3. Earnings triggers 8-K (ticker din filing)
-# 4. (viitor) Volume spikes Polygon
-#
-# theme_registry e folosit DOAR pentru a clasifica tema unui trigger,
-# nu pentru a genera companii.
 
-import re
 from app.models import Trigger, Opportunity
 from app.engines.theme_detector import detect_theme_from_text
-
-# Regex pentru ticker din text (2-5 litere majuscule)
-# Filtreaza cuvinte comune care arata ca tickers
-COMMON_WORDS = {
-    "A", "I", "IT", "AI", "US", "UK", "EU", "UN", "AT", "BE", "BY",
-    "DO", "GO", "IF", "IN", "IS", "NO", "OF", "ON", "OR", "SO", "TO",
-    "UP", "VS", "WE", "AND", "ARE", "BUT", "FOR", "HAS", "NOT", "THE",
-    "CEO", "CFO", "CTO", "COO", "IPO", "ETF", "GDP", "CPI", "FED",
-    "SEC", "FDA", "NATO", "OPEC", "SPAC", "REIT", "ESG", "API", "SaaS",
-    "LLC", "INC", "LTD", "PLC", "CORP", "NYSE", "NMS", "OTC", "ETH",
-    "BTC", "USD", "EUR", "GBP", "JPY", "Q1", "Q2", "Q3", "Q4", "YOY",
-    "QOQ", "EPS", "PE", "PB", "DCF", "EBIT", "EBITDA", "FCF",
-}
-
-TICKER_PATTERN = re.compile(r'\b([A-Z]{1,5})\b')
-
-
-def extract_tickers_from_text(text: str) -> list[str]:
-    """
-    Extrage tickers potentiale din text.
-    Filtreaza cuvinte comune si pastreaza doar ce arata a ticker real.
-    """
-    matches = TICKER_PATTERN.findall(text)
-    tickers = []
-    seen = set()
-
-    for match in matches:
-        if match in COMMON_WORDS:
-            continue
-        if len(match) < 2:
-            continue
-        if match not in seen:
-            seen.add(match)
-            tickers.append(match)
-
-    return tickers
+from app.utils.logger import log_info
 
 
 def map_triggers_to_opportunities(
@@ -60,20 +10,11 @@ def map_triggers_to_opportunities(
     insider_triggers: list[dict] | None = None,
     earnings_triggers: dict | None = None,
 ) -> list[Opportunity]:
-    """
-    Construieste oportunități EXCLUSIV din triggere reale.
 
-    Surse de tickere (in ordine de prioritate):
-    1. insider_triggers — ticker din Form 4 XML (Tier 1 Direct)
-    2. earnings_triggers — ticker din 8-K filing (Tier 1 Direct)
-    3. news triggers — ticker mentionat explicit in headline (Tier 2 Theme)
-
-    Nu mai foloseste lista predefinita din theme_registry.
-    """
     opportunities = []
-    seen = set()  # (ticker, theme) — evita duplicate
+    seen = set()  # (ticker, theme)
 
-    # ── Tier 1: Insider Buy triggers ─────────────────────────────
+    # ── Tier 1: Insider Buy (Form 4) ─────────────────────────────
     if insider_triggers:
         for t in insider_triggers:
             ticker = t.get("ticker", "").upper()
@@ -81,7 +22,7 @@ def map_triggers_to_opportunities(
                 continue
 
             company_name = t.get("company_name", ticker)
-            theme_hint, subthemes, confidence = detect_theme_from_text(
+            theme_hint, subthemes, _ = detect_theme_from_text(
                 f"{company_name} {ticker}"
             )
 
@@ -90,7 +31,7 @@ def map_triggers_to_opportunities(
                 continue
             seen.add(key)
 
-            opp = Opportunity(
+            opportunities.append(Opportunity(
                 ticker=ticker,
                 company_name=company_name,
                 theme=theme_hint,
@@ -101,15 +42,11 @@ def map_triggers_to_opportunities(
                 conviction_score=0.0,
                 priority_level="High",
                 horizon="Swing",
-                thesis="",
-                why_now="",
-                why_this_name="",
-                ai_verdict="",
+                thesis="", why_now="", why_this_name="", ai_verdict="",
                 status="ACTIVE WATCH"
-            )
-            opportunities.append(opp)
+            ))
 
-    # ── Tier 1: Earnings triggers (8-K Item 2.02) ────────────────
+    # ── Tier 1: Earnings 8-K ─────────────────────────────────────
     if earnings_triggers:
         for ticker, data in earnings_triggers.items():
             ticker = ticker.upper()
@@ -117,7 +54,7 @@ def map_triggers_to_opportunities(
                 continue
 
             company_name = data.get("company_name", ticker)
-            theme_hint, subthemes, confidence = detect_theme_from_text(
+            theme_hint, subthemes, _ = detect_theme_from_text(
                 f"{company_name} {ticker}"
             )
 
@@ -129,7 +66,7 @@ def map_triggers_to_opportunities(
             trigger_type = data.get("trigger_type", "earnings_reported")
             role = "Earnings Reporter" if trigger_type == "earnings_reported" else "Earnings Upcoming"
 
-            opp = Opportunity(
+            opportunities.append(Opportunity(
                 ticker=ticker,
                 company_name=company_name,
                 theme=theme_hint,
@@ -140,59 +77,68 @@ def map_triggers_to_opportunities(
                 conviction_score=0.0,
                 priority_level="Medium",
                 horizon="Swing",
-                thesis="",
-                why_now="",
-                why_this_name="",
-                ai_verdict="",
+                thesis="", why_now="", why_this_name="", ai_verdict="",
                 status="ACTIVE WATCH"
-            )
-            opportunities.append(opp)
+            ))
 
-    # ── Tier 2: News triggers cu ticker explicit ──────────────────
+    # ── Tier 2: News triggers cu ticker real ─────────────────────
     for trigger in triggers:
         if trigger.trigger_type != "news":
             continue
 
-        # Extrage tickers din headline
-        headline = trigger.headline
-        tickers_in_news = extract_tickers_from_text(headline.upper())
+        metadata = trigger.metadata or {}
+        primary_ticker = metadata.get("primary_ticker")
+        tickers_with_conf = metadata.get("tickers", [])
 
-        # Filtreaza doar tickers care apar in headline (nu din tema generica)
-        metadata_tickers = trigger.metadata.get("tickers", []) if hasattr(trigger, 'metadata') else []
-        all_tickers = list(set(tickers_in_news + metadata_tickers))
+        if not primary_ticker:
+            continue
 
-        if not all_tickers:
+        signal_side = metadata.get("signal_side", "neutral")
+        trigger_category = metadata.get("trigger_category", "theme")
+        entity_confidence = metadata.get("entity_confidence", 0)
+        has_direct_event = metadata.get("has_direct_event", False)
+
+        # Skip știri sell fără eveniment direct clar
+        # (prea mult risc de fals pozitiv)
+        if signal_side == "sell" and not has_direct_event:
             continue
 
         theme_hint = trigger.theme_hint
         subthemes = trigger.subthemes
 
-        for ticker in all_tickers[:3]:  # max 3 tickers per stire
-            if ticker in COMMON_WORDS:
-                continue
-
+        # Procesează toate tickerele din headline (max 3)
+        for ticker, conf in tickers_with_conf:
+            ticker = ticker.upper()
             key = (ticker, theme_hint)
             if key in seen:
                 continue
             seen.add(key)
 
-            opp = Opportunity(
+            # Priority în funcție de calitatea semnalului
+            if entity_confidence == 10 and has_direct_event:
+                priority = "High"
+                role = "Direct News Signal"
+            elif entity_confidence >= 8 and has_direct_event:
+                priority = "Medium"
+                role = "Company News"
+            else:
+                priority = "Low"
+                role = "Theme Mention"
+
+            opportunities.append(Opportunity(
                 ticker=ticker,
-                company_name=ticker,  # numele va fi imbogatit ulterior
+                company_name=ticker,
                 theme=theme_hint,
                 subtheme=subthemes[0] if subthemes else None,
-                role="Theme Mention",
-                positioning="News Trigger",
+                role=role,
+                positioning=f"News: {trigger_category} ({signal_side})",
                 market_cap_bucket="Unknown",
                 conviction_score=0.0,
-                priority_level="Low",
+                priority_level=priority,
                 horizon="Watch",
-                thesis="",
-                why_now="",
-                why_this_name="",
-                ai_verdict="",
+                thesis="", why_now="", why_this_name="", ai_verdict="",
                 status="WATCH"
-            )
-            opportunities.append(opp)
+            ))
 
+    log_info(f"[Mapper] {len(opportunities)} opportunities generated")
     return opportunities
