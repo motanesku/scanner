@@ -1,4 +1,4 @@
-from typing import List, Optional, Literal
+from typing import List, Optional, Literal, Dict, Any
 from pydantic import BaseModel, Field
 
 
@@ -10,6 +10,7 @@ class Trigger(BaseModel):
     urgency: str = "medium"
     freshness: str = "new"
     confidence: float = 5.0
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
 class Opportunity(BaseModel):
