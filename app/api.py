@@ -260,3 +260,28 @@ def debug_insider_txn():
         "non_derivative": txns,
         "derivative": deriv_txns
     }
+
+@app.get("/api/debug/universe")
+def debug_universe():
+    """Statusul ticker universe curent"""
+    from app.engines.entity_resolver import get_universe
+    u = get_universe()
+    return {
+        "count": u.get("count", 0),
+        "alias_count": u.get("alias_count", 0),
+        "built_at": u.get("built_at"),
+        "sample_tickers": list(u.get("tickers", {}).keys())[:10],
+        "sample_aliases": list(u.get("alias_index", {}).items())[:10],
+    }
+ 
+@app.get("/api/admin/refresh-universe")
+def refresh_universe_endpoint():
+    """Forțează re-descărcarea ticker universe din Polygon"""
+    from app.engines.entity_resolver import refresh_universe
+    u = refresh_universe()
+    return {
+        "status": "ok",
+        "count": u.get("count", 0),
+        "alias_count": u.get("alias_count", 0),
+        "built_at": u.get("built_at"),
+    }
