@@ -23,6 +23,9 @@ from app.scoring.risk_score import calculate_risk_score
 
 from app.utils.logger import log_info, log_success
 
+from app.engines.entity_resolver import get_universe
+universe = get_universe()
+log_info(f"[Scan] Universe: {universe.get('count', 0)} tickers, {universe.get('alias_count', 0)} aliases")
 
 def run_scan():
     log_info("Starting scan pipeline...")
