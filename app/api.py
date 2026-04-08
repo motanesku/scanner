@@ -306,3 +306,30 @@ def debug_polygon_grouped():
         "count": r.json().get("resultsCount", 0) if r.ok else 0,
         "sample": r.json().get("results", [])[:3] if r.ok else r.text[:200]
     }
+
+@app.get("/api/debug/universe")
+def debug_universe():
+    from app.engines.entity_resolver import get_universe
+    u = get_universe()
+    tickers = u.get("tickers", {})
+    
+    # Verifică dacă SIC e prezent
+    sample_with_sic = []
+    for ticker, info in list(tickers.items())[:5]:
+        sample_with_sic.append({
+            "ticker": ticker,
+            "name": info.get("name"),
+            "sic_code": info.get("sic_code"),
+            "sic_description": info.get("sic_description"),
+        })
+    
+    return {
+        "count": u.get("count", 0),
+        "alias_count": u.get("alias_count", 0),
+        "built_at": u.get("built_at"),
+        "has_sic": any(
+            info.get("sic_code") 
+            for info in list(tickers.values())[:100]
+        ),
+        "sample_with_sic": sample_with_sic,
+    }
