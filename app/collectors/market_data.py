@@ -198,3 +198,7 @@ def _empty_result(ticker: str, status: str = "error", error: str = "") -> dict:
     if error:
         result["error"] = error
     return result
+
+def get_cached_grouped_data() -> dict:
+    """Returnează grouped data din cache — fără re-fetch."""
+    return _grouped_cache
