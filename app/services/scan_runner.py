@@ -23,9 +23,85 @@ from app.scoring.risk_score import calculate_risk_score
 
 from app.utils.logger import log_info, log_success
 
+# Universe încărcat o dată la startup
 from app.engines.entity_resolver import get_universe
 universe = get_universe()
 log_info(f"[Scan] Universe: {universe.get('count', 0)} tickers, {universe.get('alias_count', 0)} aliases")
+
+
+# ── Filtre de calitate ────────────────────────────────────────────
+
+def is_investable(opp: dict) -> bool:
+    """
+    Filtrează oportunitățile sub standardul minim de investabilitate.
+
+    Filtre hard (elimină complet):
+    - Preț < $2.0 → penny stock
+    - Volum < 300K → lichiditate insuficientă
+    - Pure theme trigger fără nicio confirmare → zgomot
+
+    Dacă nu avem date Polygon (429) → păstrăm, scorul e deja penalizat.
+    """
+    md = opp.get("market_data", {})
+    price = md.get("price")
+    volume = md.get("volume")
+    status = md.get("status")
+
+    # Dacă Polygon a dat 429 sau eroare → nu știm, păstrăm
+    if status != "ok":
+        # Dar eliminăm dacă trigger stack e pur theme fără nimic real
+        trigger_stack = opp.get("trigger_stack", [])
+        has_real_trigger = any(
+            t != "Theme Trigger" for t in trigger_stack
+        )
+        if not has_real_trigger:
+            return False
+        return True
+
+    # Avem date reale — aplicăm filtrele hard
+    if price is not None and price < 2.0:
+        return False
+
+    if volume is not None and volume < 300_000:
+        return False
+
+    # Pure theme trigger fără confirmare → eliminăm
+    trigger_stack = opp.get("trigger_stack", [])
+    has_real_trigger = any(t != "Theme Trigger" for t in trigger_stack)
+    if not has_real_trigger:
+        return False
+
+    return True
+
+
+def apply_quality_score_adjustments(opp: dict) -> dict:
+    """
+    Ajustează scorul în funcție de calitatea datelor disponibile.
+
+    Nu elimină, doar penalizează:
+    - Fără date Polygon → -10
+    - Volum < 500K → -5
+    - Preț < 5$ → -5
+    """
+    md = opp.get("market_data", {})
+    price = md.get("price")
+    volume = md.get("volume")
+    status = md.get("status")
+
+    score = opp["score"]
+
+    if status != "ok":
+        score -= 10  # nu știm lichiditatea
+
+    elif price is not None and volume is not None:
+        if price < 5.0:
+            score -= 5
+        if volume < 500_000:
+            score -= 5
+
+    opp["score"] = round(max(0, score), 1)
+    return opp
+
 
 def run_scan():
     log_info("Starting scan pipeline...")
@@ -139,30 +215,25 @@ def run_scan():
                 if md["price"] > md["previous_close"]:
                     confirmation_triggers += 1
 
-        # Insider buy ca direct trigger
         has_insider_buy = any("Insider Buy" in s for s in opp.trigger_stack)
         if has_insider_buy:
             direct_triggers += 1
 
-        # Scoruri cu insider_triggers pasat explicit
         catalyst_score = calculate_catalyst_score(
             ticker=ticker,
             parsed_filings=parsed_filings,
             parsed_news=parsed_news,
             market_data=market_data,
-            insider_triggers=insider_triggers   # ← nou
+            insider_triggers=insider_triggers
         )
-
         narrative_score = calculate_narrative_score(
             ticker=ticker,
             parsed_news=parsed_news
         )
-
         market_score = calculate_market_score(
             ticker=ticker,
             market_data=market_data
         )
-
         risk_score = calculate_risk_score(
             ticker=ticker,
             parsed_filings=parsed_filings,
@@ -193,7 +264,6 @@ def run_scan():
             has_insider=has_insider_buy
         )
 
-        # Insider info pentru card
         insider_detail = next(
             (t for t in insider_triggers
              if t.get("ticker", "").upper() == ticker
@@ -235,7 +305,6 @@ def run_scan():
             "next_confirmations": opp.next_confirmations,
             "failure_modes": opp.failure_modes,
 
-            # Insider detalii pentru card UI
             "insider": {
                 "name": insider_detail.get("insider_name", ""),
                 "role": insider_detail.get("insider_role", ""),
@@ -249,25 +318,43 @@ def run_scan():
             "market_data": md
         })
 
-    # ── 8. Sortare ────────────────────────────────────────────────
+    # ── 8. Ajustări calitate scor ─────────────────────────────────
+    final_opportunities = [apply_quality_score_adjustments(o) for o in final_opportunities]
+
+    # ── 9. Filtru investabilitate ─────────────────────────────────
+    before_filter = len(final_opportunities)
+    final_opportunities = [o for o in final_opportunities if is_investable(o)]
+    log_info(f"[Scan] Quality filter: {before_filter} → {len(final_opportunities)} opportunities")
+
+    # ── 10. Re-sortare după scor ajustat ──────────────────────────
     final_opportunities = sorted(
         final_opportunities,
         key=lambda x: x["score"],
         reverse=True
     )
 
-    # ── 9. Theme summary ──────────────────────────────────────────
+    # ── 11. Re-calculează signal după ajustări ────────────────────
+    for opp in final_opportunities:
+        opp["signal"] = determine_signal(
+            score=opp["score"],
+            risk_score=opp["risk_score"],
+            direct_triggers=opp["direct_triggers"],
+            confirmation_triggers=opp["confirmation_triggers"]
+        )
+
+    # ── 12. Theme summary ─────────────────────────────────────────
     themes = build_theme_summary(final_opportunities)
 
-    # ── 10. Daily report ──────────────────────────────────────────
+    # ── 13. Daily report ──────────────────────────────────────────
     daily_report = build_daily_report(final_opportunities, themes)
 
-    # ── 11. Output final ──────────────────────────────────────────
+    # ── 14. Output final ──────────────────────────────────────────
     result = {
         "summary": {
             "total_opportunities": len(final_opportunities),
             "total_themes": len(themes),
             "insider_triggers_found": len(insider_triggers),
+            "earnings_triggers_found": len(earnings_triggers),
             "scan_status": "ok"
         },
         "opportunities": final_opportunities,
@@ -279,7 +366,7 @@ def run_scan():
     with open(OUTPUT_PATH, "w", encoding="utf-8") as f:
         json.dump(result, f, indent=2, ensure_ascii=False)
 
-    log_success(f"[Scan] Done — {len(final_opportunities)} opportunities, {len(insider_triggers)} insider triggers.")
+    log_success(f"[Scan] Done — {len(final_opportunities)} investable opportunities.")
     return result
 
 
@@ -337,7 +424,13 @@ def build_daily_report(opportunities, themes):
             if top_themes else "No dominant market narrative detected."
         ),
         "top_ideas": [
-            {"ticker": x["ticker"], "score": x["score"], "signal": x["signal"], "theme": x["theme"]}
+            {
+                "ticker": x["ticker"],
+                "score": x["score"],
+                "signal": x["signal"],
+                "theme": x["theme"],
+                "why_now": x["why_now"],
+            }
             for x in top_ideas
         ],
         "focus": [
