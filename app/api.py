@@ -285,3 +285,24 @@ def refresh_universe_endpoint():
         "alias_count": u.get("alias_count", 0),
         "built_at": u.get("built_at"),
     }
+
+@app.get("/api/debug/polygon-grouped")
+def debug_polygon_grouped():
+    import requests
+    from datetime import datetime, timezone, timedelta
+    
+    # Data de ieri (markets closed)
+    yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
+    
+    r = requests.get(
+        f"https://api.polygon.io/v2/aggs/grouped/locale/us/market/stocks/{yesterday}",
+        params={"apiKey": "l1oXhYe6KwprlwpIs8DUakKIj7w9SUmx", "adjusted": "true"},
+        timeout=30
+    )
+    
+    return {
+        "status": r.status_code,
+        "date": yesterday,
+        "count": r.json().get("resultsCount", 0) if r.ok else 0,
+        "sample": r.json().get("results", [])[:3] if r.ok else r.text[:200]
+    }
