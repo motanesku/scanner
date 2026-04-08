@@ -22,6 +22,9 @@ from app.scoring.market_score import calculate_market_score
 from app.scoring.risk_score import calculate_risk_score
 
 from app.utils.logger import log_info, log_success
+from app.collectors.volume_history import update_history, get_history_stats
+from app.collectors.volume_spike_collector import collect_volume_spike_triggers
+from app.services.haiku_enricher import enrich_with_haiku
 
 # Universe încărcat o dată la startup
 from app.engines.entity_resolver import get_universe
@@ -168,10 +171,27 @@ def run_scan():
     # ── 5. Market data ────────────────────────────────────────────
     # Grouped daily: un singur request Polygon pentru toată piața
     # Fără 429, fără delay per ticker
-    from app.collectors.market_data import preload_market_data
+    from app.collectors.market_data import preload_market_data, _get_grouped_daily
     n_tickers = preload_market_data()
     log_info(f"[Scan] Market data preloaded: {n_tickers} tickers available")
     market_data = collect_market_data(tickers)
+
+    # ── 5b. Volume history update ─────────────────────────────
+    # Salvează datele de azi în history local pentru spike detection
+    from app.collectors.market_data import _get_grouped_daily, _grouped_cache_date
+    grouped_data = _get_grouped_daily()
+    if grouped_data:
+        from datetime import datetime, timezone
+        today_str = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+        update_history(grouped_data, today_str)
+        log_info(f"[Scan] Volume history updated — {get_history_stats()}")
+
+    # ── 5c. Volume spike triggers ─────────────────────────────
+    # Detectează spikes față de media istorică acumulată
+    volume_spike_triggers = collect_volume_spike_triggers(grouped_data)
+    log_info(f"[Scan] Volume spike triggers: {len(volume_spike_triggers)}")
+    # Adaugă spike triggers la classified_triggers pentru theme_mapper
+    classified_triggers.extend(volume_spike_triggers)
 
     # ── 6. Parsed news per ticker ────────────────────────────────
     parsed_news_input = []
@@ -355,14 +375,18 @@ def run_scan():
     final_opportunities = [o for o in final_opportunities if is_investable(o)]
     log_info(f"[Scan] Quality filter: {before_filter} → {len(final_opportunities)} opportunities")
 
-    # ── 10. Re-sortare după scor ajustat ──────────────────────────
+    # ── 10. Haiku enrichment ─────────────────────────────────────
+    # Generează ai_verdict + why_now personalizat în română
+    final_opportunities = enrich_with_haiku(final_opportunities)
+
+    # ── 11. Re-sortare după scor ajustat ─────────────────────────
     final_opportunities = sorted(
         final_opportunities,
         key=lambda x: x["score"],
         reverse=True
     )
 
-    # ── 11. Re-calculează signal după ajustări ────────────────────
+    # ── 12. Re-calculează signal după ajustări ───────────────────
     for opp in final_opportunities:
         opp["signal"] = determine_signal(
             score=opp["score"],
@@ -371,13 +395,13 @@ def run_scan():
             confirmation_triggers=opp["confirmation_triggers"]
         )
 
-    # ── 12. Theme summary ─────────────────────────────────────────
+    # ── 13. Theme summary ────────────────────────────────────────
     themes = build_theme_summary(final_opportunities)
 
-    # ── 13. Daily report ──────────────────────────────────────────
+    # ── 14. Daily report ─────────────────────────────────────────
     daily_report = build_daily_report(final_opportunities, themes)
 
-    # ── 14. Output final ──────────────────────────────────────────
+    # ── 15. Output final ─────────────────────────────────────────
     result = {
         "summary": {
             "total_opportunities": len(final_opportunities),
