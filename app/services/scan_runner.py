@@ -24,7 +24,6 @@ from app.scoring.risk_score import calculate_risk_score
 from app.utils.logger import log_info, log_success
 from app.collectors.volume_history import save_volume_history, get_volume_history
 from app.collectors.volume_spike_collector import collect_volume_spike_triggers
-from app.services.haiku_enricher import enrich_with_haiku
 
 # Universe încărcat o dată la startup
 from app.engines.entity_resolver import get_universe
@@ -380,8 +379,7 @@ def run_scan():
 
     # ── 10. Haiku enrichment ─────────────────────────────────────
     # Generează ai_verdict + why_now personalizat în română
-    final_opportunities = enrich_with_haiku(final_opportunities)
-
+  
     # ── 11. Re-sortare după scor ajustat ─────────────────────────
     final_opportunities = sorted(
         final_opportunities,
