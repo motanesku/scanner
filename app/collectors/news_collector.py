@@ -4,54 +4,52 @@ import re
 from app.models import Trigger
 from app.collectors.rss_collector import fetch_rss_headlines
 from app.engines.theme_detector import detect_theme_from_text
-from app.data.theme_registry import THEME_REGISTRY
+from app.data.company_aliases import COMPANY_ALIASES
 
+
+# Patternuri precise
+DOLLAR_TICKER_RE = re.compile(r'(?<!\w)\$([A-Z]{1,5})(?!\w)')
+EXCHANGE_TICKER_RE = re.compile(r'\b(?:NASDAQ|NYSE|AMEX)[:\s]+([A-Z]{1,5})\b', re.IGNORECASE)
+PAREN_TICKER_RE = re.compile(r'\(([A-Z]{1,5})\)')
+
+# blacklist minim de cuvinte care au apărut false în output
+STOPWORDS = {
+    "A", "AI", "AM", "AN", "AND", "ARE", "AS", "AT", "BE", "BUT", "BY",
+    "CEO", "CFO", "COO", "CTO", "DAY", "DEAL", "DO", "EPS", "ETF", "FDA",
+    "FED", "FOR", "FROM", "GET", "GO", "HAS", "HIGH", "HOW", "IN", "IS",
+    "IT", "ITS", "LOW", "MAKE", "MOST", "NEW", "NO", "NOT", "NOW", "OIL",
+    "ON", "ONE", "OR", "OUR", "OUT", "Q1", "Q2", "Q3", "Q4", "RATES",
+    "SEC", "SO", "STOCK", "THAT", "THE", "THIS", "TIME", "TO", "TOP",
+    "UP", "USA", "USE", "WAR", "WEEK", "WHAT", "WHICH", "WITH", "YOU",
+    "YOUR", "AFTER", "ABOUT", "FIRST", "FILES", "JOBS", "SHIFT", "BANK",
+    "SAFE"  # companie reală la tine, dar prea ambiguă în headlines globale; o lăsăm doar prin alias match
+}
+
+HIGH_VALUE_KEYWORDS = [
+    "earnings", "guidance", "beat", "miss", "contract", "deal", "partnership",
+    "approval", "approved", "acquisition", "acquire", "merger", "buyout",
+    "offering", "dilution", "lawsuit", "investigation", "fda", "pentagon",
+    "opec", "saudi aramco", "data center", "datacenter", "gpu", "semiconductor",
+    "chip", "cloud", "cyber", "cybersecurity", "uranium", "oil", "gas",
+    "defense", "military", "rare disease"
+]
 
 NOISE_PATTERNS = [
     "stocks mixed",
     "market opens",
     "market closes",
     "futures edge",
-    "dow rises",
-    "nasdaq rises",
-    "s&p 500",
     "wall street",
     "stocks to watch",
     "premarket movers",
+    "top stocks",
+    "market roundup",
 ]
-
-HIGH_VALUE_KEYWORDS = [
-    "earnings",
-    "guidance",
-    "beat",
-    "miss",
-    "contract",
-    "deal",
-    "partnership",
-    "approval",
-    "acquisition",
-    "merger",
-    "offering",
-    "dilution",
-    "lawsuit",
-    "investigation",
-    "ai",
-    "gpu",
-    "data center",
-    "cloud",
-    "oil",
-    "gas",
-    "uranium",
-    "copper",
-    "cyber",
-    "defense",
-]
-
-TICKER_REGEX = r"\b[A-Z]{2,5}\b"
 
 
 def collect_news_triggers() -> list[Trigger]:
     raw_headlines = fetch_rss_headlines(limit_per_feed=15)
+
     triggers: list[Trigger] = []
     seen_titles = set()
 
@@ -73,43 +71,55 @@ def collect_news_triggers() -> list[Trigger]:
         if is_noise(combined_lower):
             continue
 
-        if not is_relevant_news(combined_lower):
-            continue
+        explicit_tickers = extract_precise_tickers(title)
+        alias_matches = detect_company_aliases(combined_lower)
 
-        explicit_tickers = extract_tickers(title)
-        explicit_company_match = detect_company_match(combined_lower)
+        has_direct_entity = bool(explicit_tickers or alias_matches)
+        has_high_value_signal = is_high_value_news(combined_lower)
+
+        # dacă nu avem nici companie, nici trigger tematic util, o ignorăm
+        if not has_direct_entity and not has_high_value_signal:
+            continue
 
         theme_name, subthemes, confidence = detect_theme_from_text(combined_text)
 
-        # fallback: dacă nu detectăm tema din text, dar detectăm companie/ticker din registry
-        if (theme_name is None or theme_name == "General Market") and explicit_company_match:
-            theme_name = explicit_company_match["theme"]
-            subthemes = explicit_company_match["subthemes"]
-            confidence = max(confidence, 7.0)
-
-        if theme_name is None:
+        if not theme_name:
             continue
 
+        signal_origin = "direct" if has_direct_entity else "theme"
         urgency = determine_urgency(
             text=combined_lower,
-            confidence=confidence,
-            explicit_tickers=explicit_tickers,
-            explicit_company_match=explicit_company_match is not None,
+            has_direct_entity=has_direct_entity,
+            confidence=confidence
         )
 
-        headline = title
-        if explicit_tickers:
-            headline = f"{title} [{' '.join(explicit_tickers)}]"
+        # tickerul final: întâi ticker explicit, apoi alias map
+        final_tickers = []
+        for t in explicit_tickers:
+            if t not in final_tickers:
+                final_tickers.append(t)
+
+        for t in alias_matches:
+            if t not in final_tickers:
+                final_tickers.append(t)
 
         triggers.append(
             Trigger(
                 trigger_type="news",
-                headline=headline,
+                headline=title,
                 theme_hint=theme_name,
                 subthemes=subthemes or [],
                 urgency=urgency,
                 freshness="new",
                 confidence=float(confidence),
+                metadata={
+                    "tickers": final_tickers,
+                    "signal_origin": signal_origin,
+                    "source": item.get("source", ""),
+                    "link": item.get("link", ""),
+                    "published": item.get("published", ""),
+                    "company_alias_matches": alias_matches,
+                }
             )
         )
 
@@ -126,72 +136,72 @@ def is_noise(text: str) -> bool:
     return any(pattern in text for pattern in NOISE_PATTERNS)
 
 
-def is_relevant_news(text: str) -> bool:
-    if any(keyword in text for keyword in HIGH_VALUE_KEYWORDS):
-        return True
-
-    # dacă menționează explicit o companie/ticker din registry, o considerăm relevantă
-    if detect_company_match(text) is not None:
-        return True
-
-    return False
+def is_high_value_news(text: str) -> bool:
+    return any(keyword in text for keyword in HIGH_VALUE_KEYWORDS)
 
 
-def extract_tickers(text: str) -> list[str]:
-    matches = re.findall(TICKER_REGEX, text or "")
-    filtered = []
-
-    for m in matches:
-        # filtrăm zgomotul evident
-        if m in {"USA", "CEO", "FDA", "ETF", "EPS", "SEC", "IPO"}:
-            continue
-        filtered.append(m)
-
-    return sorted(list(set(filtered)))
-
-
-def detect_company_match(text: str):
+def extract_precise_tickers(text: str) -> list[str]:
     """
-    Caută dacă o companie din registry sau tickerul ei apare explicit în text.
-    Returnează tema aferentă, dacă există match.
+    Extragem doar tickere foarte probabile:
+    1. $TICKER
+    2. NASDAQ:NVDA / NYSE:XOM
+    3. Company (TICKER)
     """
+    candidates = []
 
-    text_upper = text.upper()
+    for match in DOLLAR_TICKER_RE.findall(text):
+        add_valid_ticker(candidates, match)
 
-    for theme_name, theme_data in THEME_REGISTRY.items():
-        for company in theme_data.get("companies", []):
-            ticker = company.get("ticker", "").upper()
-            company_name = company.get("company_name", "").lower()
+    for match in EXCHANGE_TICKER_RE.findall(text):
+        add_valid_ticker(candidates, match)
 
-            if ticker and re.search(rf"\b{re.escape(ticker)}\b", text_upper):
-                return {
-                    "theme": theme_name,
-                    "subthemes": theme_data.get("subthemes", []),
-                    "ticker": ticker,
-                    "company_name": company.get("company_name", ""),
-                }
+    for match in PAREN_TICKER_RE.findall(text):
+        add_valid_ticker(candidates, match)
 
-            if company_name and company_name in text.lower():
-                return {
-                    "theme": theme_name,
-                    "subthemes": theme_data.get("subthemes", []),
-                    "ticker": ticker,
-                    "company_name": company.get("company_name", ""),
-                }
-
-    return None
+    return candidates
 
 
-def determine_urgency(
-    text: str,
-    confidence: float,
-    explicit_tickers: list[str],
-    explicit_company_match: bool,
-) -> str:
-    if explicit_tickers or explicit_company_match:
+def add_valid_ticker(bucket: list[str], ticker: str):
+    ticker = ticker.upper().strip()
+
+    if not ticker:
+        return
+    if ticker in STOPWORDS:
+        return
+    if len(ticker) < 1 or len(ticker) > 5:
+        return
+    if not ticker.isalpha():
+        return
+    if ticker not in COMPANY_ALIASES and ticker not in {"NVDA", "AMD", "AAPL", "MSFT", "GOOGL", "AMZN", "META", "PLTR", "LMT", "VRTX", "XOM", "CVX", "CCJ", "SMCI", "ANET", "PANW", "CRWD", "TSM", "INTC"}:
+        return
+
+    if ticker not in bucket:
+        bucket.append(ticker)
+
+
+def detect_company_aliases(text_lower: str) -> list[str]:
+    matched = []
+
+    for ticker, aliases in COMPANY_ALIASES.items():
+        for alias in aliases:
+            if re.search(rf"\b{re.escape(alias.lower())}\b", text_lower):
+                if ticker not in matched:
+                    matched.append(ticker)
+                break
+
+    return matched
+
+
+def determine_urgency(text: str, has_direct_entity: bool, confidence: float) -> str:
+    if has_direct_entity and any(
+        k in text for k in [
+            "earnings", "guidance", "contract", "deal", "approval", "approved",
+            "acquisition", "merger", "offering", "dilution", "lawsuit", "investigation"
+        ]
+    ):
         return "high"
 
-    if any(k in text for k in ["earnings", "guidance", "contract", "approval", "offering", "dilution"]):
+    if has_direct_entity:
         return "high"
 
     if confidence >= 7.5:
