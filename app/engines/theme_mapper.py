@@ -58,7 +58,7 @@ def map_triggers_to_opportunities(
     opportunities = []
     seen = set()  # ticker — un ticker apare o singură dată
 
-    # ── Tier 1: Insider Buy (Form 4) ─────────────────────────────
+    # ── Tier 1: Insider Buy (Form 4) ─────────────────────────────────────────
     # Insider buy NICIODATĂ nu se exclude — e cel mai valoros semnal
     if insider_triggers:
         for t in insider_triggers:
@@ -91,7 +91,7 @@ def map_triggers_to_opportunities(
                 status="ACTIVE WATCH"
             ))
 
-    # ── Tier 1: Earnings 8-K ─────────────────────────────────────
+    # ── Tier 1: Earnings 8-K ─────────────────────────────────────────────────
     if earnings_triggers:
         for ticker, data in earnings_triggers.items():
             ticker = ticker.upper()
@@ -125,7 +125,7 @@ def map_triggers_to_opportunities(
                 status="ACTIVE WATCH"
             ))
 
-    # ── Tier 2: News triggers cu ticker real ─────────────────────
+    # ── Tier 2: News triggers cu ticker real ──────────────────────────────────
     for trigger in triggers:
         if trigger.trigger_type != "news":
             continue
@@ -185,5 +185,92 @@ def map_triggers_to_opportunities(
                 status="WATCH"
             ))
 
-    log_info(f"[Mapper] {len(opportunities)} opportunities after sector filter")
+    # ── Tier 3: Volume spike triggers ─────────────────────────────────────────
+    # Spikes detectate din history D1 vs grouped daily curent
+    # Incluse DUPĂ news triggers — semnal de confirmare sau oportunitate standalone
+    spike_count = 0
+    for trigger in triggers:
+        if trigger.trigger_type != "market":
+            continue
+
+        metadata = trigger.metadata or {}
+        trigger_category = metadata.get("trigger_category", "")
+        if trigger_category != "volume_spike":
+            continue
+
+        ticker = metadata.get("primary_ticker", "").upper()
+        if not ticker:
+            continue
+
+        spike_ratio = metadata.get("spike_ratio", 0)
+        signal_side = metadata.get("signal_side", "neutral")
+        price = metadata.get("price", 0)
+        volume = metadata.get("volume", 0)
+        avg_volume = metadata.get("avg_volume", 0)
+
+        # Threshold: 2x pentru WATCH, 3x pentru semnal mai puternic
+        if spike_ratio < 2.0:
+            continue
+
+        # Dacă tickerul e deja în scan (din alt trigger) — adăugăm spike la trigger_stack
+        # nu creăm oportunitate duplicată
+        if ticker in seen:
+            # Găsim oportunitatea existentă și marcăm spike-ul
+            for opp in opportunities:
+                if opp.ticker == ticker:
+                    spike_label = (
+                        f"Volume Spike {spike_ratio:.1f}x"
+                        if spike_ratio < 3.0
+                        else f"Volume Spike STRONG {spike_ratio:.1f}x"
+                    )
+                    if spike_label not in (opp.trigger_stack or []):
+                        opp.trigger_stack = (opp.trigger_stack or []) + [spike_label]
+                    break
+            continue
+
+        # Ticker nou — creăm oportunitate standalone
+        theme, subtheme = _resolve_theme(ticker, ticker, "")
+        # General Market e acceptat — includem orice ticker cu spike
+
+        seen.add(ticker)
+        spike_count += 1
+
+        # Role și positioning bazate pe direcție
+        if signal_side == "buy":
+            role = "Volume Spike — Buy Pressure"
+            positioning = f"Spike {spike_ratio:.1f}x avg — presiune cumpărare"
+        elif signal_side == "sell":
+            role = "Volume Spike — Sell Pressure"
+            positioning = f"Spike {spike_ratio:.1f}x avg — presiune vânzare"
+        else:
+            role = "Volume Spike"
+            positioning = f"Spike {spike_ratio:.1f}x avg — direcție neutră"
+
+        # Turnover zilnic pentru context
+        daily_turnover = price * volume if price and volume else 0
+        turnover_str = f"${daily_turnover/1_000_000:.1f}M" if daily_turnover >= 1_000_000 else ""
+
+        opportunities.append(Opportunity(
+            ticker=ticker,
+            company_name=ticker,
+            theme=theme,
+            subtheme=subtheme or "Volume Spike",
+            role=role,
+            positioning=positioning,
+            market_cap_bucket="Unknown",
+            conviction_score=0.0,
+            priority_level="High" if spike_ratio >= 3.0 else "Medium",
+            horizon="Watch",
+            thesis="",
+            why_now=(
+                f"Volum neobișnuit {spike_ratio:.1f}x față de media 20 zile "
+                f"({turnover_str} turnover zilnic) — semnal de activitate instituțională."
+            ),
+            why_this_name="",
+            ai_verdict="",
+            status="WATCH"
+        ))
+
+    log_info(f"[Mapper] {len(opportunities)} opportunities after sector filter "
+             f"({spike_count} volume spike standalone)")
     return opportunities
