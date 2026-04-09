@@ -1,62 +1,107 @@
 # File: app/collectors/sec_enricher.py
 #
-# Enrichment SIC din SEC EDGAR — gratuit, oficial, fără rate limit sever.
+# Enrichment SIC din SEC EDGAR — gratuit, oficial.
 #
 # Workflow:
-# 1. Caută CIK pentru ticker din EDGAR company search
-# 2. Fetch data.sec.gov/submissions/CIK{cik}.json
+# 1. CIK map — descărcat O DATĂ/ZI, cacheat în D1 via Worker (TTL 24h)
+# 2. Fetch data.sec.gov/submissions/CIK{cik}.json per ticker
 # 3. Extrage sic + sicDescription
-# 4. Cacheaza în memorie (SIC nu se schimbă)
+# 4. Cache în memorie per proces (SIC nu se schimbă în aceeași zi)
 
-import re
+import os
+import json
 import time
 import requests
 from app.utils.logger import log_info, log_warn, log_error
 
 HEADERS = {"User-Agent": "scanner-mvp/1.0 danut.fagadau@gmail.com"}
+WORKER_URL = os.environ.get("WORKER_URL", "https://portfolio-api.danut-fagadau.workers.dev")
 
-# Cache în memorie per proces — SIC nu se schimbă
-_sic_cache: dict[str, tuple[int, str]] = {}
-
-# EDGAR company search
-EDGAR_SEARCH_URL = "https://efts.sec.gov/LATEST/search-index?q=%22{ticker}%22&dateRange=custom&startdt=2020-01-01&forms=10-K"
-EDGAR_COMPANY_URL = "https://www.sec.gov/cgi-bin/browse-edgar?company=&CIK={ticker}&type=10-K&dateb=&owner=include&count=1&search_text=&action=getcompany&output=atom"
 EDGAR_SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
-EDGAR_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
+EDGAR_TICKERS_URL     = "https://www.sec.gov/files/company_tickers.json"
 
-# Cache CIK lookup — descărcat o dată
-_cik_map: dict[str, str] = {}  # ticker → cik (zero-padded 10 digits)
+# Cache în memorie per proces
+_sic_cache: dict[str, tuple[int, str]] = {}
+_cik_map:   dict[str, str] = {}   # ticker → cik (zero-padded 10 digits)
+
+
+# ── CIK Map — cacheat în D1 via Worker (TTL 24h) ─────────────────────────────
+
+def _load_cik_map_from_d1() -> dict[str, str]:
+    """
+    Încearcă să citească CIK map din D1 cache via Worker.
+    Returnează dict sau {} dacă cache-ul nu există / e expirat.
+    """
+    try:
+        r = requests.get(
+            f"{WORKER_URL}/api/sec-cik-cache",
+            timeout=10
+        )
+        if r.ok:
+            data = r.json()
+            if data.get("ok") and data.get("data"):
+                log_info(f"[SEC] CIK map loaded from D1 cache ({data.get('age_h', '?')}h old)")
+                return data["data"]
+    except Exception as e:
+        log_warn(f"[SEC] D1 cache read failed: {e}")
+    return {}
+
+
+def _save_cik_map_to_d1(cik_map: dict[str, str]) -> None:
+    """Salvează CIK map în D1 via Worker."""
+    try:
+        r = requests.post(
+            f"{WORKER_URL}/api/sec-cik-cache",
+            json={"data": cik_map},
+            timeout=30
+        )
+        if r.ok:
+            log_info(f"[SEC] CIK map saved to D1 ({len(cik_map)} tickers)")
+        else:
+            log_warn(f"[SEC] D1 cache save failed: {r.status_code}")
+    except Exception as e:
+        log_warn(f"[SEC] D1 cache save error: {e}")
 
 
 def _load_cik_map() -> dict[str, str]:
     """
-    Descarcă mapping-ul complet ticker → CIK din SEC EDGAR.
-    Fișier static, actualizat zilnic de SEC.
-    ~500KB, conține toate companiile publice US.
+    Returnează CIK map cu strategie cache:
+    1. Cache în memorie (același proces)
+    2. Cache D1 via Worker (24h TTL)
+    3. Fetch direct din SEC EDGAR (fallback)
     """
     global _cik_map
 
     if _cik_map:
         return _cik_map
 
+    # Încearcă D1 cache
+    cached = _load_cik_map_from_d1()
+    if cached:
+        _cik_map = cached
+        return _cik_map
+
+    # Fetch din SEC EDGAR
+    log_info("[SEC] Fetching CIK map from EDGAR (not in cache)...")
     try:
-        log_info("[SEC] Loading CIK map from EDGAR...")
-        r = requests.get(
-            EDGAR_TICKERS_URL,
-            headers=HEADERS,
-            timeout=20
-        )
+        r = requests.get(EDGAR_TICKERS_URL, headers=HEADERS, timeout=30)
         r.raise_for_status()
         data = r.json()
 
         # Format: {"0": {"cik_str": 320193, "ticker": "AAPL", "title": "Apple Inc."}, ...}
+        cik_map = {}
         for _, item in data.items():
             ticker = item.get("ticker", "").upper()
             cik = str(item.get("cik_str", "")).zfill(10)
             if ticker:
-                _cik_map[ticker] = cik
+                cik_map[ticker] = cik
 
-        log_info(f"[SEC] CIK map loaded: {len(_cik_map)} tickers")
+        log_info(f"[SEC] CIK map fetched: {len(cik_map)} tickers")
+
+        # Salvează în D1 pentru data viitoare
+        _save_cik_map_to_d1(cik_map)
+
+        _cik_map = cik_map
         return _cik_map
 
     except Exception as e:
@@ -65,10 +110,11 @@ def _load_cik_map() -> dict[str, str]:
 
 
 def _get_cik(ticker: str) -> str | None:
-    """Returnează CIK pentru un ticker."""
     cik_map = _load_cik_map()
     return cik_map.get(ticker.upper())
 
+
+# ── SIC fetch per ticker ──────────────────────────────────────────────────────
 
 def _fetch_sic_from_edgar(ticker: str) -> tuple[int, str] | None:
     """
@@ -89,8 +135,8 @@ def _fetch_sic_from_edgar(ticker: str) -> tuple[int, str] | None:
             return None
 
         if r.status_code == 429:
-            log_warn(f"[SEC] Rate limit for {ticker} — waiting 5s")
-            time.sleep(5)
+            log_warn(f"[SEC] Rate limit for {ticker} — waiting 10s")
+            time.sleep(10)
             r = requests.get(url, headers=HEADERS, timeout=15)
 
         r.raise_for_status()
@@ -102,12 +148,15 @@ def _fetch_sic_from_edgar(ticker: str) -> tuple[int, str] | None:
         if sic:
             return (int(sic), sic_desc)
 
+        log_warn(f"[SEC] {ticker}: no SIC found")
         return None
 
     except Exception as e:
         log_error(f"[SEC] Submissions fetch error for {ticker}: {e}")
         return None
 
+
+# ── Public API ────────────────────────────────────────────────────────────────
 
 def enrich_with_sic(tickers: list[str]) -> dict[str, tuple[int, str]]:
     """
@@ -117,20 +166,18 @@ def enrich_with_sic(tickers: list[str]) -> dict[str, tuple[int, str]]:
     {
         "APP":  (7372, "Services-Prepackaged Software"),
         "NRIX": (2836, "Pharmaceutical Preparations"),
-        "OGS":  (4924, "Natural Gas Distribution"),
-        "AEHR": (3825, "Instruments for Measuring"),
         ...
     }
 
     Tickers fără SIC → nu apar în rezultat.
-    Folosește cache în memorie — request SEC doar o dată per ticker per proces.
+    Cache în memorie — request SEC doar o dată per ticker per proces.
     """
     result = {}
 
     for ticker in tickers:
         ticker = ticker.upper()
 
-        # Din cache
+        # Din cache memorie
         if ticker in _sic_cache:
             result[ticker] = _sic_cache[ticker]
             continue
@@ -142,11 +189,9 @@ def enrich_with_sic(tickers: list[str]) -> dict[str, tuple[int, str]]:
             _sic_cache[ticker] = sic_data
             result[ticker] = sic_data
             log_info(f"[SEC] {ticker}: SIC {sic_data[0]} — {sic_data[1]}")
-        else:
-            log_warn(f"[SEC] {ticker}: no SIC found")
 
         # Rate limit respectuos față de SEC
-        time.sleep(0.15)
+        time.sleep(0.2)
 
     return result
 
